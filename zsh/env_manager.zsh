@@ -2,7 +2,16 @@
 # Safely loads project variables on entry and unloads on exit with SHA256 verification
 
 typeset -ga _TERMINALY_LOADED_ENV_VARS=()
-typeset -g _TERMINALY_TRUSTED_ENV_FILE="$HOME/.terminaly/trusted_envs"
+
+function _terminaly_get_trusted_env_file() {
+    if mkdir -p "$HOME/.terminaly" 2>/dev/null && touch "$HOME/.terminaly/trusted_envs" 2>/dev/null; then
+        echo "$HOME/.terminaly/trusted_envs"
+    else
+        mkdir -p "$TERMINALY_HOME/.terminaly_data" 2>/dev/null
+        touch "$TERMINALY_HOME/.terminaly_data/trusted_envs" 2>/dev/null
+        echo "$TERMINALY_HOME/.terminaly_data/trusted_envs"
+    fi
+}
 
 function _terminaly_unload_prev_env() {
     if (( ${#_TERMINALY_LOADED_ENV_VARS} > 0 )); then
@@ -14,6 +23,11 @@ function _terminaly_unload_prev_env() {
 }
 
 function _terminaly_chpwd_env() {
+    # Check if auto env is disabled
+    if [[ "$TERMINALY_AUTO_ENV" == "0" || "$TERMINALY_AUTO_ENV" == "off" || "$TERMINALY_AUTO_ENV" == "false" ]]; then
+        return
+    fi
+
     _terminaly_unload_prev_env
 
     local env_file=""
@@ -26,20 +40,20 @@ function _terminaly_chpwd_env() {
     [[ -z "$env_file" ]] && return
 
     local full_path="$PWD/$env_file"
-    mkdir -p "$HOME/.terminaly"
-    touch "$_TERMINALY_TRUSTED_ENV_FILE"
+    local trusted_file
+    trusted_file=$(_terminaly_get_trusted_env_file)
 
     # Compute SHA256 hash
     local hash
     hash=$(shasum -a 256 "$full_path" 2>/dev/null | awk '{print $1}')
     local entry="$full_path:$hash"
 
-    if ! grep -Fxq "$entry" "$_TERMINALY_TRUSTED_ENV_FILE" 2>/dev/null; then
+    if ! grep -Fxq "$entry" "$trusted_file" 2>/dev/null; then
         echo -n "\033[1m\033[33mTerminaly:\033[0m Untrusted or modified env file detected ($env_file). Load environment? [y/N] "
         read -q response
         echo
         if [[ "$response" == "y" || "$response" == "Y" ]]; then
-            echo "$entry" >> "$_TERMINALY_TRUSTED_ENV_FILE"
+            echo "$entry" >> "$trusted_file"
         else
             echo "\033[31mSkipped loading $env_file.\033[0m"
             return
