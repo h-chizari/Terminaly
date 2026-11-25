@@ -267,9 +267,9 @@ class FileManager:
 
             # Row max_y - 1: Footer
             if self.cmd_mode:
-                footer = " [Enter] Execute  [Esc] Cancel  [Tab] Auto-complete  [↑/↓] History "
+                footer = " [Enter] Execute  [Ctrl+C / Backspace] Exit  [Tab] Complete  [↑/↓] History "
             else:
-                footer = " [Enter] Open  [:] Run Command  [c] Copy  [x] Cut  [v] Paste  [d] Delete  [q] Quit "
+                footer = " [Enter] Open  [:] Run Command  [c] Copy  [x] Cut  [v] Paste  [d] Delete  [q/Ctrl+C] Quit "
             safe_addstr(stdscr, max_y - 1, 0, footer.ljust(max(0, max_x - 1)),
                         curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE)
 
@@ -281,7 +281,8 @@ class FileManager:
 
             # ==================== COMMAND MODE ====================
             if self.cmd_mode:
-                if key == 27:  # Esc cancels command mode
+                # Cancel command mode on Esc (27), Ctrl+C (3), or Ctrl+G (7)
+                if key in (27, 3, 7):
                     self.cmd_mode = False
                     self.cmd_buffer = ""
                     self.cmd_cursor = 0
@@ -296,6 +297,11 @@ class FileManager:
                     if self.cmd_cursor > 0:
                         self.cmd_buffer = self.cmd_buffer[:self.cmd_cursor - 1] + self.cmd_buffer[self.cmd_cursor:]
                         self.cmd_cursor -= 1
+                    elif len(self.cmd_buffer) == 0:
+                        # Pressing Backspace on empty prompt also exits command mode
+                        self.cmd_mode = False
+                        self.cmd_cursor = 0
+                        self.status_message = ""
                 elif key == curses.KEY_DC:  # Delete key
                     if self.cmd_cursor < len(self.cmd_buffer):
                         self.cmd_buffer = self.cmd_buffer[:self.cmd_cursor] + self.cmd_buffer[self.cmd_cursor + 1:]
@@ -335,7 +341,7 @@ class FileManager:
                 continue
 
             # ==================== NAVIGATION MODE ====================
-            if key in (ord('q'), 27):
+            if key in (ord('q'), 27, 3, 7):
                 break
             elif key in (ord(':'), ord('!')):
                 # Enter command prompt mode

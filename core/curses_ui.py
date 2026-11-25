@@ -177,7 +177,7 @@ class InteractivePicker:
             key = stdscr.getch()
             if key == -1:
                 continue
-            if key in (27, 3):  # ESC or Ctrl+C
+            if key in (27, 3, 7):  # ESC, Ctrl+C, or Ctrl+G
                 return None
             elif key in (curses.KEY_ENTER, 10, 13):
                 if filtered and 0 <= self.selected_idx < len(filtered):
