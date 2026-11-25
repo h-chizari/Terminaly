@@ -2,7 +2,7 @@
 
 **Terminaly** is a high-speed, modular terminal enhancement suite designed specifically for macOS native tools (`Terminal.app`, `/bin/zsh`, `/usr/bin/vim`, `/usr/bin/sqlite3`, Python 3 stdlib) and **Google Antigravity (`agy`)**.
 
-It achieves all 15 capabilities from the modern terminal benchmark ("I Tried Everything. This is the Best Terminal Setup") with **zero internet downloads** (`brew`, `pip`, `npm`, and `cargo` are NOT used).
+It provides a complete, modern command-line productivity environment built entirely with native macOS tools and **zero external downloads** (`brew`, `pip`, `npm`, and `cargo` are NOT required).
 
 ---
 
@@ -112,3 +112,10 @@ terminaly doctor
   tai sessions            # List recent Antigravity conversation sessions
   tai export <session_id> # Export transcript to markdown
   ```
+
+---
+
+## Author & Open Source License
+
+* **Author:** Hassan Chizari
+* **License:** Open Source under the MIT License — free to use, modify, and distribute.
