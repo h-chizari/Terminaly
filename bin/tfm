@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tfm: Visual Dual-Pane TUI File Explorer with Previews & Clipboard (Superfile equivalent)."""
+"""tfm: Visual Dual-Pane TUI File Explorer with Integrated Bottom Command Prompt (Superfile equivalent)."""
 
 import curses
 import os
@@ -14,6 +14,7 @@ from typing import List, Optional
 # Ensure core is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.curses_ui import TerminalColors, safe_addstr, draw_box
+from core.db import record_command
 
 class FileManager:
     def __init__(self, start_dir: str = "."):
@@ -26,6 +27,14 @@ class FileManager:
         self.bookmarks: List[Path] = [Path.home(), Path.cwd()]
         self.status_message = ""
         self.filter_query = ""
+        
+        # Integrated Command Prompt
+        self.cmd_mode = False
+        self.cmd_buffer = ""
+        self.cmd_cursor = 0
+        self.cmd_history: List[str] = []
+        self.cmd_hist_idx = -1
+
         self.refresh_entries()
 
     def refresh_entries(self):
@@ -75,13 +84,94 @@ class FileManager:
             except Exception as e:
                 return [str(e)]
 
+    def complete_token(self):
+        """Auto-completes the current token in command buffer using files in cwd."""
+        parts = self.cmd_buffer.split()
+        prefix = parts[-1] if (parts and not self.cmd_buffer.endswith(" ")) else ""
+        try:
+            matches = [e.name + ("/" if e.is_dir() else "") for e in self.cwd.iterdir() if e.name.startswith(prefix)]
+            if len(matches) == 1:
+                replacement = matches[0]
+                if prefix:
+                    self.cmd_buffer = self.cmd_buffer[:-len(prefix)] + replacement
+                else:
+                    self.cmd_buffer += replacement
+                self.cmd_cursor = len(self.cmd_buffer)
+            elif len(matches) > 1:
+                self.status_message = f"Matches: {' '.join(matches[:6])}"
+        except Exception:
+            pass
+
+    def execute_command(self, cmd_str: str, stdscr):
+        cmd_clean = cmd_str.strip()
+        if not cmd_clean:
+            return
+
+        self.cmd_history.append(cmd_clean)
+        self.cmd_hist_idx = -1
+
+        curr_target = self.entries[self.selected_idx] if self.entries else self.cwd
+
+        # Macro expansions:
+        # %f = full path to selected file
+        # %n = selected file name
+        # %d = current working directory
+        expanded_cmd = cmd_clean.replace("%f", f'"{str(curr_target)}"')
+        expanded_cmd = expanded_cmd.replace("%n", f'"{curr_target.name}"')
+        expanded_cmd = expanded_cmd.replace("%d", f'"{str(self.cwd)}"')
+
+        # Built-in cd handling
+        tokens = expanded_cmd.split(None, 1)
+        if tokens[0] == "cd":
+            target_str = tokens[1] if len(tokens) > 1 else str(Path.home())
+            target_path = Path(target_str).expanduser()
+            if not target_path.is_absolute():
+                target_path = (self.cwd / target_path).resolve()
+            if target_path.is_dir():
+                self.cwd = target_path
+                self.selected_idx = 0
+                self.refresh_entries()
+                self.status_message = f"Changed directory to {self.cwd.name}"
+            else:
+                self.status_message = f"Directory not found: {target_str}"
+            return
+
+        # Shell command execution outside curses
+        curses.endwin()
+        print(f"\n\033[1m\033[36m[tfm]\033[0m Executing: \033[1m{expanded_cmd}\033[0m in \033[33m{self.cwd}\033[0m\n")
+        start_time = time.time()
+        try:
+            shell_bin = os.environ.get("SHELL", "/bin/zsh")
+            proc = subprocess.run([shell_bin, "-c", expanded_cmd], cwd=str(self.cwd))
+            exit_code = proc.returncode
+        except Exception as e:
+            print(f"\033[31mExecution failed: {e}\033[0m")
+            exit_code = 1
+        duration = time.time() - start_time
+
+        # Record command execution to persistent history
+        try:
+            record_command(expanded_cmd, str(self.cwd), time.time(), exit_code, duration, "tfm")
+        except Exception:
+            pass
+
+        print(f"\n\033[2m[Exit: {exit_code} ({duration:.2f}s) — Press Enter to return to tfm]\033[0m")
+        try:
+            input()
+        except Exception:
+            pass
+
+        # Restore curses
+        stdscr = curses.initscr()
+        TerminalColors.init_colors()
+        self.refresh_entries()
+
     def run(self):
         curses.wrapper(self._main)
 
     def _main(self, stdscr):
         TerminalColors.init_colors()
-        curses.curs_set(0)
-        stdscr.timeout(200)
+        stdscr.timeout(100)
 
         while True:
             stdscr.clear()
@@ -98,13 +188,13 @@ class FileManager:
             header = f" tfm File Manager │ {self.cwd} "
             if self.clipboard_path:
                 header += f" [{self.clipboard_op.upper()}: {self.clipboard_path.name}]"
-            safe_addstr(stdscr, 0, 0, header.ljust(max_x),
+            safe_addstr(stdscr, 0, 0, header.ljust(max(0, max_x - 1)),
                         curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE | curses.A_BOLD)
 
-            # Dimensions
+            # Dimensions: Reserve 4 bottom rows for info, command prompt, and footer
             left_w = int(max_x * 0.45)
             right_w = max_x - left_w
-            body_h = max_y - 3
+            body_h = max_y - 4
 
             # Draw Left Pane (File List)
             draw_box(stdscr, 1, 0, body_h, left_w, title=f"Contents ({len(self.entries)})",
@@ -145,27 +235,122 @@ class FileManager:
                     safe_addstr(stdscr, 2 + i, left_w + 2, pl[:right_w - 4],
                                 curses.color_pair(TerminalColors.PAIR_DEFAULT))
 
-            # Status Message
+            # Row max_y - 3: Item Info or Status Message
             if self.status_message:
-                safe_addstr(stdscr, max_y - 2, 0, f" {self.status_message} "[:max_x],
-                            curses.color_pair(TerminalColors.PAIR_WARNING))
+                safe_addstr(stdscr, max_y - 3, 0, f" {self.status_message} "[:max_x - 1],
+                            curses.color_pair(TerminalColors.PAIR_WARNING) | curses.A_BOLD)
+            elif self.entries:
+                cur = self.entries[self.selected_idx]
+                try:
+                    st = cur.stat()
+                    sz = f"{st.st_size:,} bytes"
+                    info_text = f" Selected: {cur.name} ({sz}) │ %f=path, %n=name "
+                    safe_addstr(stdscr, max_y - 3, 0, info_text[:max_x - 1], curses.color_pair(TerminalColors.PAIR_MUTED))
+                except Exception:
+                    pass
 
-            # Footer
-            footer = " [Enter] Open  [c] Copy  [x] Cut  [v] Paste  [d] Delete  [q] Quit "
+            # Row max_y - 2: Integrated Command Prompt
+            prompt_label = "❯ "
+            if self.cmd_mode:
+                safe_addstr(stdscr, max_y - 2, 0, prompt_label,
+                            curses.color_pair(TerminalColors.PAIR_SUCCESS) | curses.A_BOLD)
+                safe_addstr(stdscr, max_y - 2, len(prompt_label), self.cmd_buffer[:max_x - len(prompt_label) - 1],
+                            curses.A_BOLD)
+                curses.curs_set(1)
+                cursor_pos = min(max_x - 2, len(prompt_label) + self.cmd_cursor)
+                stdscr.move(max_y - 2, cursor_pos)
+            else:
+                curses.curs_set(0)
+                hint = "❯ Press ':' to run shell command (e.g. git status, touch, mkdir, cd)"
+                safe_addstr(stdscr, max_y - 2, 0, hint[:max_x - 1],
+                            curses.color_pair(TerminalColors.PAIR_MUTED))
+
+            # Row max_y - 1: Footer
+            if self.cmd_mode:
+                footer = " [Enter] Execute  [Esc] Cancel  [Tab] Auto-complete  [↑/↓] History "
+            else:
+                footer = " [Enter] Open  [:] Run Command  [c] Copy  [x] Cut  [v] Paste  [d] Delete  [q] Quit "
             safe_addstr(stdscr, max_y - 1, 0, footer.ljust(max(0, max_x - 1)),
                         curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE)
 
             stdscr.refresh()
 
             key = stdscr.getch()
+            if key == -1:
+                continue
+
+            # ==================== COMMAND MODE ====================
+            if self.cmd_mode:
+                if key == 27:  # Esc cancels command mode
+                    self.cmd_mode = False
+                    self.cmd_buffer = ""
+                    self.cmd_cursor = 0
+                    self.status_message = ""
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    cmd_to_run = self.cmd_buffer
+                    self.cmd_mode = False
+                    self.cmd_buffer = ""
+                    self.cmd_cursor = 0
+                    self.execute_command(cmd_to_run, stdscr)
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    if self.cmd_cursor > 0:
+                        self.cmd_buffer = self.cmd_buffer[:self.cmd_cursor - 1] + self.cmd_buffer[self.cmd_cursor:]
+                        self.cmd_cursor -= 1
+                elif key == curses.KEY_DC:  # Delete key
+                    if self.cmd_cursor < len(self.cmd_buffer):
+                        self.cmd_buffer = self.cmd_buffer[:self.cmd_cursor] + self.cmd_buffer[self.cmd_cursor + 1:]
+                elif key == curses.KEY_LEFT:
+                    if self.cmd_cursor > 0:
+                        self.cmd_cursor -= 1
+                elif key == curses.KEY_RIGHT:
+                    if self.cmd_cursor < len(self.cmd_buffer):
+                        self.cmd_cursor += 1
+                elif key == 9:  # Tab auto-completion
+                    self.complete_token()
+                elif key == curses.KEY_UP:
+                    # History previous
+                    if self.cmd_history:
+                        if self.cmd_hist_idx == -1:
+                            self.cmd_hist_idx = len(self.cmd_history) - 1
+                        elif self.cmd_hist_idx > 0:
+                            self.cmd_hist_idx -= 1
+                        self.cmd_buffer = self.cmd_history[self.cmd_hist_idx]
+                        self.cmd_cursor = len(self.cmd_buffer)
+                elif key == curses.KEY_DOWN:
+                    # History next
+                    if self.cmd_history and self.cmd_hist_idx != -1:
+                        if self.cmd_hist_idx < len(self.cmd_history) - 1:
+                            self.cmd_hist_idx += 1
+                            self.cmd_buffer = self.cmd_history[self.cmd_hist_idx]
+                            self.cmd_cursor = len(self.cmd_buffer)
+                        else:
+                            self.cmd_hist_idx = -1
+                            self.cmd_buffer = ""
+                            self.cmd_cursor = 0
+                elif 32 <= key <= 126:
+                    # Insert typed character at cursor
+                    ch = chr(key)
+                    self.cmd_buffer = self.cmd_buffer[:self.cmd_cursor] + ch + self.cmd_buffer[self.cmd_cursor:]
+                    self.cmd_cursor += 1
+                continue
+
+            # ==================== NAVIGATION MODE ====================
             if key in (ord('q'), 27):
                 break
+            elif key in (ord(':'), ord('!')):
+                # Enter command prompt mode
+                self.cmd_mode = True
+                self.cmd_buffer = ""
+                self.cmd_cursor = 0
+                self.status_message = ""
             elif key in (curses.KEY_UP, ord('k')):
                 if self.selected_idx > 0:
                     self.selected_idx -= 1
+                self.status_message = ""
             elif key in (curses.KEY_DOWN, ord('j')):
                 if self.selected_idx < len(self.entries) - 1:
                     self.selected_idx += 1
+                self.status_message = ""
             elif key in (curses.KEY_LEFT, ord('h')):
                 # Go up to parent directory
                 if self.cwd != self.cwd.parent:
@@ -173,6 +358,7 @@ class FileManager:
                     self.filter_query = ""
                     self.selected_idx = 0
                     self.refresh_entries()
+                self.status_message = ""
             elif key in (curses.KEY_RIGHT, ord('l'), 10, 13):
                 # Open directory or edit file
                 if self.entries:
@@ -191,6 +377,7 @@ class FileManager:
                         stdscr = curses.initscr()
                         TerminalColors.init_colors()
                         self.refresh_entries()
+                self.status_message = ""
             elif key == ord('c'):
                 # Copy
                 if self.entries:
