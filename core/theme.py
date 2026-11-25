@@ -15,6 +15,11 @@ THEMES = {
         "name": "Catppuccin Latte (Light)",
         "type": "light",
         "desc": "Crisp, warm contrast optimized for light, beige, or white terminal backgrounds",
+        "hex": {
+            "bg": "#eff1f5",
+            "fg": "#4c4f69",
+            "cursor": "#dc8a78"
+        },
         # 256-color codes: (fg, bg)
         "curses": {
             "default": (-1, -1),
@@ -42,6 +47,11 @@ THEMES = {
         "name": "Catppuccin Mocha (Dark)",
         "type": "dark",
         "desc": "Modern soothing pastel palette on deep slate dark background",
+        "hex": {
+            "bg": "#1e1e2e",
+            "fg": "#cdd6f4",
+            "cursor": "#f5e0dc"
+        },
         "curses": {
             "default": (-1, -1),
             "header": (117, -1),       # Sky Blue
@@ -68,6 +78,11 @@ THEMES = {
         "name": "Tokyo Night (Dark)",
         "type": "dark",
         "desc": "Vibrant neon accents on a sleek deep blue-black night background",
+        "hex": {
+            "bg": "#1a1b26",
+            "fg": "#c0caf5",
+            "cursor": "#7aa2f7"
+        },
         "curses": {
             "default": (-1, -1),
             "header": (75, -1),        # Neon Cyan/Blue
@@ -94,6 +109,11 @@ THEMES = {
         "name": "Nord Arctic (Dark)",
         "type": "dark",
         "desc": "Calm, cold arctic ice blue and frost palette",
+        "hex": {
+            "bg": "#2e3440",
+            "fg": "#eceff4",
+            "cursor": "#88c0d0"
+        },
         "curses": {
             "default": (-1, -1),
             "header": (110, -1),       # Frost Blue
@@ -120,6 +140,11 @@ THEMES = {
         "name": "Dracula (Dark)",
         "type": "dark",
         "desc": "High contrast gothic dark theme with vivid purple and pink highlights",
+        "hex": {
+            "bg": "#282a36",
+            "fg": "#f8f8f2",
+            "cursor": "#bd93f9"
+        },
         "curses": {
             "default": (-1, -1),
             "header": (141, -1),       # Dracula Purple
@@ -144,6 +169,48 @@ THEMES = {
     }
 }
 
+def hex_to_rgb_tuple(hex_str: str):
+    h = hex_str.lstrip('#')
+    return int(h[0:2], 16) * 257, int(h[2:4], 16) * 257, int(h[4:6], 16) * 257
+
+def apply_terminal_theme(theme_name: Optional[str] = None):
+    """Dynamically applies the theme colors to the macOS Terminal window via OSC sequences and AppleScript."""
+    t = THEMES.get(theme_name or get_theme_name(), THEMES["latte"])
+    hex_info = t.get("hex")
+    if not hex_info:
+        return
+
+    bg = hex_info.get("bg", "")
+    fg = hex_info.get("fg", "")
+    cursor = hex_info.get("cursor", "")
+
+    # 1. Send dynamic OSC escape sequences to stdout
+    if bg and fg:
+        try:
+            sys.stdout.write(f"\033]11;{bg}\007\033]10;{fg}\007")
+            if cursor:
+                sys.stdout.write(f"\033]12;{cursor}\007")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    # 2. On macOS Terminal.app, tell Terminal to update current window colors
+    try:
+        import subprocess
+        r_bg, g_bg, b_bg = hex_to_rgb_tuple(bg)
+        r_fg, g_fg, b_fg = hex_to_rgb_tuple(fg)
+        ascript = f'''
+        tell application "Terminal"
+            if (count of windows) > 0 then
+                set background color of front window to {{{r_bg}, {g_bg}, {b_bg}}}
+                set normal text color of front window to {{{r_fg}, {g_fg}, {b_fg}}}
+            end if
+        end tell
+        '''
+        subprocess.run(["osascript", "-e", ascript], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
 def get_theme_name() -> str:
     env_theme = os.environ.get("TERMINALY_THEME")
     if env_theme and env_theme in THEMES:
@@ -164,13 +231,15 @@ def set_theme_name(theme_name: str) -> bool:
     try:
         THEME_FILE.parent.mkdir(parents=True, exist_ok=True)
         THEME_FILE.write_text(theme_name, encoding="utf-8")
-        return True
     except Exception:
         # Fallback to local data dir
         fallback = Path(__file__).resolve().parent.parent / ".terminaly_data" / "theme"
         fallback.parent.mkdir(parents=True, exist_ok=True)
         fallback.write_text(theme_name, encoding="utf-8")
-        return True
+    
+    # Immediately apply window colors
+    apply_terminal_theme(theme_name)
+    return True
 
 def get_active_theme() -> Dict[str, Any]:
     name = get_theme_name()

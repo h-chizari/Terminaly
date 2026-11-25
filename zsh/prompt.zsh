@@ -107,7 +107,7 @@ function _terminaly_duration_segment() {
         local elapsed=$(( EPOCHREALTIME - _TERMINALY_CMD_START ))
         _TERMINALY_CMD_START=0
         if (( elapsed > 2.0 )); then
-            printf " ${_T_YELLOW}[%.1fs]${_T_RESET}" $elapsed
+            printf " %s[%.1fs]%s" "$_T_YELLOW" "$elapsed" "$_T_RESET"
         fi
     fi
 }
@@ -120,6 +120,8 @@ add-zsh-hook preexec _terminaly_preexec_timer
 
 function _terminaly_render_prompt() {
     local last_exit=$?
+    _terminaly_load_prompt_colors
+
     local exit_badge=""
     if (( last_exit != 0 )); then
         exit_badge="${_T_RED}[${last_exit}]${_T_RESET} "

@@ -13,6 +13,17 @@ source "$TERMINALY_HOME/zsh/history.zsh"
 source "$TERMINALY_HOME/zsh/env_manager.zsh"
 source "$TERMINALY_HOME/zsh/keybindings.zsh"
 
+# Apply active terminal theme colors (OSC 10/11)
+python3 -c "
+import sys
+sys.path.insert(0, '$TERMINALY_HOME')
+try:
+    from core.theme import apply_terminal_theme
+    apply_terminal_theme()
+except Exception:
+    pass
+" 2>/dev/null
+
 # Record initial shell launch directory
 if whence -w _terminaly_chpwd_record >/dev/null 2>&1; then
     _terminaly_chpwd_record
