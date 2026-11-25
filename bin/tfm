@@ -166,8 +166,21 @@ class FileManager:
         TerminalColors.init_colors()
         self.refresh_entries()
 
+    def save_last_dir(self):
+        """Saves current directory so parent shell can cd into it upon exit."""
+        try:
+            from core.db import ensure_terminaly_dir, record_visit
+            lastdir_file = ensure_terminaly_dir() / "lastdir"
+            lastdir_file.write_text(str(self.cwd), encoding="utf-8")
+            record_visit(str(self.cwd))
+        except Exception:
+            pass
+
     def run(self):
-        curses.wrapper(self._main)
+        try:
+            curses.wrapper(self._main)
+        finally:
+            self.save_last_dir()
 
     def _main(self, stdscr):
         TerminalColors.init_colors()

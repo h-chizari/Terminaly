@@ -29,6 +29,26 @@ function help() {
     "$TERMINALY_HOME/bin/terminaly" help
 }
 
+# tfm shell wrapper: lands on the folder visited inside tfm upon exit
+function tfm() {
+    "$TERMINALY_HOME/bin/tfm" "$@"
+
+    local target=""
+    if [[ -f "$HOME/.terminaly/lastdir" ]]; then
+        target=$(cat "$HOME/.terminaly/lastdir" 2>/dev/null)
+        rm -f "$HOME/.terminaly/lastdir"
+    elif [[ -f "$TERMINALY_HOME/.terminaly_data/lastdir" ]]; then
+        target=$(cat "$TERMINALY_HOME/.terminaly_data/lastdir" 2>/dev/null)
+        rm -f "$TERMINALY_HOME/.terminaly_data/lastdir"
+    fi
+
+    if [[ -n "$target" && -d "$target" && "$target" != "$PWD" ]]; then
+        cd "$target"
+    fi
+}
+# Alias to handle typo 'tmf'
+alias tmf="tfm"
+
 # Record initial shell launch directory
 if whence -w _terminaly_chpwd_record >/dev/null 2>&1; then
     _terminaly_chpwd_record
