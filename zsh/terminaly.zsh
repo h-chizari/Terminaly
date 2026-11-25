@@ -68,6 +68,12 @@ function task() {
 }
 alias ask="task"
 
+# Tabular directory listing (tls)
+alias ls="tls"
+alias ll="tls -l"
+alias la="tls -la"
+alias lt="tls -T"
+
 # Record initial shell launch directory
 if whence -w _terminaly_chpwd_record >/dev/null 2>&1; then
     _terminaly_chpwd_record

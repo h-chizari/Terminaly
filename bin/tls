@@ -1,43 +1,32 @@
 #!/usr/bin/env python3
-"""tls: High-speed modern tree and directory listing utility (eza equivalent)."""
+"""tls: High-speed modern tree and tabular directory listing utility (eza equivalent)."""
 
 import argparse
 import os
+import re
 import stat
 import sys
 import time
+import shutil
 from pathlib import Path
-from typing import Dict, Optional
+from typing import List, Tuple, Dict, Any, Optional
 
 # Ensure core is in path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.theme import get_active_theme
 
-# Load active theme colors
-_theme = get_active_theme()["ansi"]
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-BLUE = _theme.get("primary", "\033[34m")
-CYAN = _theme.get("secondary", "\033[36m")
-GREEN = _theme.get("success", "\033[32m")
-YELLOW = _theme.get("warning", "\033[33m")
-RED = _theme.get("danger", "\033[31m")
-MAGENTA = _theme.get("accent", "\033[35m")
-MUTED = _theme.get("muted", "\033[38;5;242m")
-
 def format_size(size_bytes: int) -> str:
     if size_bytes < 1024:
-        return f"{size_bytes}B".rjust(6)
+        return f"{size_bytes}B"
     elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f}K".rjust(6)
+        return f"{size_bytes / 1024:.1f}K"
     elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f}M".rjust(6)
+        return f"{size_bytes / (1024 * 1024):.1f}M"
     else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.1f}G".rjust(6)
+        return f"{size_bytes / (1024 * 1024 * 1024):.1f}G"
 
 def format_perms(mode: int) -> str:
-    is_dir = "d" if stat.S_ISDIR(mode) else "-"
+    is_dir = "d" if stat.S_ISDIR(mode) else ("l" if stat.S_ISLNK(mode) else "-")
     perms = [
         "r" if mode & stat.S_IRUSR else "-",
         "w" if mode & stat.S_IWUSR else "-",
@@ -49,23 +38,54 @@ def format_perms(mode: int) -> str:
         "w" if mode & stat.S_IWOTH else "-",
         "x" if mode & stat.S_IXOTH else "-",
     ]
-    return f"{DIM}{is_dir}{''.join(perms)}{RESET}"
+    return f"{is_dir}{''.join(perms)}"
 
-def get_file_color(path: Path, st_mode: int) -> str:
+def format_mtime(mtime: float) -> str:
+    now = time.time()
+    if abs(now - mtime) > 180 * 86400:
+        return time.strftime("%b %d  %Y", time.localtime(mtime))
+    return time.strftime("%b %d %H:%M", time.localtime(mtime))
+
+def get_dir_item_count(path: Path) -> str:
+    try:
+        count = sum(1 for e in path.iterdir() if not e.name.startswith("."))
+        return f"{count} items" if count != 1 else "1 item"
+    except Exception:
+        return "-"
+
+def get_file_icon_and_color(path: Path, st_mode: int, ansi: Dict[str, str]) -> Tuple[str, str]:
+    b = "\033[1m"
+    p = ansi.get("primary", "\033[36m")
+    s = ansi.get("secondary", "\033[34m")
+    suc = ansi.get("success", "\033[32m")
+    warn = ansi.get("warning", "\033[33m")
+    dang = ansi.get("danger", "\033[31m")
+    acc = ansi.get("accent", "\033[35m")
+    rst = "\033[0m"
+
     if stat.S_ISDIR(st_mode):
-        return f"{BOLD}{CYAN}"
+        return "📁", f"{b}{p}"
     elif stat.S_ISLNK(st_mode):
-        return f"{MAGENTA}"
+        return "🔗", f"{acc}"
     elif st_mode & stat.S_IXUSR:
-        return f"{BOLD}{GREEN}"
+        return "⚡", f"{b}{suc}"
+
     ext = path.suffix.lower()
-    if ext in (".py", ".sh", ".zsh", ".bash", ".js", ".ts", ".go", ".rs", ".c", ".cpp", ".swift"):
-        return f"{YELLOW}"
-    elif ext in (".zip", ".tar", ".gz", ".7z", ".pkg", ".dmg"):
-        return f"{RED}"
-    elif ext in (".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".sql"):
-        return f"{CYAN}"
-    return f"{RESET}"
+    if ext in (".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".m4v"):
+        return "🎬", f"{acc}"
+    elif ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".svg", ".bmp", ".ico", ".tiff"):
+        return "🖼️ ", f"{warn}"
+    elif ext in (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"):
+        return "🎵", f"{warn}"
+    elif ext in (".zip", ".tar", ".gz", ".7z", ".pkg", ".dmg", ".rar", ".bz2", ".xz", ".tgz"):
+        return "📦", f"{dang}"
+    elif ext in (".py", ".sh", ".zsh", ".bash", ".js", ".ts", ".go", ".rs", ".c", ".cpp", ".swift", ".html", ".css", ".jsx", ".tsx"):
+        return "💻", f"{suc}"
+    elif ext in (".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".conf", ".config", ".plist"):
+        return "⚙️ ", f"{p}"
+    elif ext in (".md", ".txt", ".rtf", ".pdf", ".docx", ".doc", ".xlsx", ".pptx", ".csv", ".tsv"):
+        return "📄", f"{rst}"
+    return "📄", f"{rst}"
 
 def get_git_status_map(target_dir: str) -> Dict[str, str]:
     status_map = {}
@@ -83,33 +103,127 @@ def get_git_status_map(target_dir: str) -> Dict[str, str]:
         pass
     return status_map
 
-def print_long_listing(paths, git_map):
-    for p in paths:
+def strip_ansi(s: str) -> str:
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+
+def ansi_ljust(s: str, width: int) -> str:
+    vis_len = len(strip_ansi(s))
+    pad = max(0, width - vis_len)
+    return s + " " * pad
+
+def print_tabular_listing(entries: List[Path], git_map: Dict[str, str], ansi: Dict[str, str], sort_by: str = "default", reverse: bool = False):
+    term_width = shutil.get_terminal_size((80, 24)).columns
+    b = "\033[1m"
+    dim = "\033[2m"
+    rst = "\033[0m"
+    p = ansi.get("primary", "\033[36m")
+    suc = ansi.get("success", "\033[32m")
+    warn = ansi.get("warning", "\033[33m")
+    dang = ansi.get("danger", "\033[31m")
+
+    # Group into folders and files
+    dirs = [e for e in entries if e.is_dir()]
+    files = [e for e in entries if not e.is_dir()]
+
+    # Apply sorting
+    if sort_by == "time":
+        dirs.sort(key=lambda x: x.lstat().st_mtime, reverse=not reverse)
+        files.sort(key=lambda x: x.lstat().st_mtime, reverse=not reverse)
+    elif sort_by == "size":
+        dirs.sort(key=lambda x: x.name.lower(), reverse=reverse)
+        files.sort(key=lambda x: x.lstat().st_size, reverse=not reverse)
+    else:
+        dirs.sort(key=lambda x: x.name.lower(), reverse=reverse)
+        files.sort(key=lambda x: x.name.lower(), reverse=reverse)
+
+    all_sorted = dirs + files if not reverse or sort_by != "default" else (files + dirs if reverse and sort_by == "default" else dirs + files)
+
+    total_dirs = len(dirs)
+    total_files = len(files)
+    total_bytes = 0
+    for f in files:
         try:
-            st = p.lstat()
-            perms = format_perms(st.st_mode)
-            sz = format_size(st.st_size)
-            mtime = time.strftime("%b %d %H:%M", time.localtime(st.st_mtime))
-            color = get_file_color(p, st.st_mode)
-            
-            # Git status flag
-            rel = os.path.relpath(str(p), ".")
-            gst = git_map.get(rel, "")
-            gst_badge = f"{YELLOW}[{gst}]{RESET} " if gst else "    "
-            
-            name = p.name
-            if p.is_dir():
-                name += "/"
-            elif p.is_symlink():
+            if not f.is_symlink():
+                total_bytes += f.lstat().st_size
+        except Exception:
+            pass
+
+    show_extended = term_width >= 90
+
+    # Column widths
+    type_col_w = 4
+    sz_col_w = 12
+    mod_col_w = 14
+    perms_col_w = 11 if show_extended else 0
+    git_col_w = 6 if show_extended else 0
+
+    borders_w = 13 if show_extended else 10
+    fixed_w = type_col_w + sz_col_w + mod_col_w + perms_col_w + git_col_w + borders_w
+    name_col_w = max(20, min(50, term_width - fixed_w))
+
+    # Borders
+    if show_extended:
+        top_border = f"{dim}┌─{'─'*type_col_w}─┬─{'─'*name_col_w}─┬─{'─'*sz_col_w}─┬─{'─'*mod_col_w}─┬─{'─'*perms_col_w}─┬─{'─'*git_col_w}─┐{rst}"
+        hdr = f"{dim}│{rst} {b}{'Type'.ljust(type_col_w)}{rst} {dim}│{rst} {b}{'Name'.ljust(name_col_w)}{rst} {dim}│{rst} {b}{'Size / Items'.rjust(sz_col_w)}{rst} {dim}│{rst} {b}{'Modified'.ljust(mod_col_w)}{rst} {dim}│{rst} {b}{'Perms'.ljust(perms_col_w)}{rst} {dim}│{rst} {b}{'Git'.ljust(git_col_w)}{rst} {dim}│{rst}"
+        mid_border = f"{dim}├─{'─'*type_col_w}─┼─{'─'*name_col_w}─┼─{'─'*sz_col_w}─┼─{'─'*mod_col_w}─┼─{'─'*perms_col_w}─┼─{'─'*git_col_w}─┤{rst}"
+        bot_border = f"{dim}└─{'─'*type_col_w}─┴─{'─'*name_col_w}─┴─{'─'*sz_col_w}─┴─{'─'*mod_col_w}─┴─{'─'*perms_col_w}─┴─{'─'*git_col_w}─┘{rst}"
+    else:
+        top_border = f"{dim}┌─{'─'*type_col_w}─┬─{'─'*name_col_w}─┬─{'─'*sz_col_w}─┬─{'─'*mod_col_w}─┐{rst}"
+        hdr = f"{dim}│{rst} {b}{'Type'.ljust(type_col_w)}{rst} {dim}│{rst} {b}{'Name'.ljust(name_col_w)}{rst} {dim}│{rst} {b}{'Size / Items'.rjust(sz_col_w)}{rst} {dim}│{rst} {b}{'Modified'.ljust(mod_col_w)}{rst} {dim}│{rst}"
+        mid_border = f"{dim}├─{'─'*type_col_w}─┼─{'─'*name_col_w}─┼─{'─'*sz_col_w}─┼─{'─'*mod_col_w}─┤{rst}"
+        bot_border = f"{dim}└─{'─'*type_col_w}─┴─{'─'*name_col_w}─┴─{'─'*sz_col_w}─┴─{'─'*mod_col_w}─┘{rst}"
+
+    print(top_border)
+    print(hdr)
+    print(mid_border)
+
+    for idx, e in enumerate(all_sorted):
+        # Insert divider between directories and files
+        if dirs and idx == len(dirs):
+            print(mid_border)
+
+        try:
+            st = e.lstat()
+            is_dir = stat.S_ISDIR(st.st_mode)
+            icon, color = get_file_icon_and_color(e, st.st_mode, ansi)
+
+            if is_dir:
+                sz_str = get_dir_item_count(e)
+                sz_color = warn
+            else:
+                sz_str = format_size(st.st_size)
+                sz_color = suc
+
+            mtime_str = format_mtime(st.st_mtime)
+            perms_str = format_perms(st.st_mode)
+
+            display_name = e.name + ("/" if is_dir else "")
+            if e.is_symlink():
                 try:
-                    name += f" -> {os.readlink(p)}"
+                    display_name += f" -> {os.readlink(e)}"
                 except Exception:
                     pass
-            print(f"{perms}  {sz}  {DIM}{mtime}{RESET}  {gst_badge}{color}{name}{RESET}")
-        except Exception as e:
-            print(f"Error reading {p}: {e}")
 
-def print_tree(dir_path: Path, prefix: str = "", level: int = 0, max_depth: int = 3, show_hidden: bool = False):
+            if len(display_name) > name_col_w:
+                display_name = display_name[:name_col_w - 3] + "..."
+
+            rel = os.path.relpath(str(e), ".")
+            gst = git_map.get(rel, "")
+            gst_badge = f"{warn}[{gst}]{rst}" if gst else ""
+
+            if show_extended:
+                pad_git = ansi_ljust(gst_badge, git_col_w)
+                print(f"{dim}│{rst} {icon:<3} {dim}│{rst} {color}{display_name.ljust(name_col_w)}{rst} {dim}│{rst} {sz_color}{sz_str.rjust(sz_col_w)}{rst} {dim}│{rst} {dim}{mtime_str.ljust(mod_col_w)}{rst} {dim}│{rst} {dim}{perms_str.ljust(perms_col_w)}{rst} {dim}│{rst} {pad_git} {dim}│{rst}")
+            else:
+                print(f"{dim}│{rst} {icon:<3} {dim}│{rst} {color}{display_name.ljust(name_col_w)}{rst} {dim}│{rst} {sz_color}{sz_str.rjust(sz_col_w)}{rst} {dim}│{rst} {dim}{mtime_str.ljust(mod_col_w)}{rst} {dim}│{rst}")
+
+        except Exception:
+            pass
+
+    print(bot_border)
+    print(f"  {dim}Total: {total_dirs} directories, {total_files} files ({format_size(total_bytes).strip()}){rst}\n")
+
+def print_tree(dir_path: Path, prefix: str = "", level: int = 0, max_depth: int = 3, show_hidden: bool = False, ansi: Dict[str, str] = None):
     if level >= max_depth:
         return
     try:
@@ -121,64 +235,115 @@ def print_tree(dir_path: Path, prefix: str = "", level: int = 0, max_depth: int 
         entries = [e for e in entries if not e.name.startswith(".")]
 
     total = len(entries)
+    dim = "\033[2m"
+    rst = "\033[0m"
+
     for idx, e in enumerate(entries):
         is_last = (idx == total - 1)
         connector = "└── " if is_last else "├── "
         child_prefix = "    " if is_last else "│   "
-        
+
         try:
             st = e.lstat()
-            color = get_file_color(e, st.st_mode)
+            icon, color = get_file_icon_and_color(e, st.st_mode, ansi or {})
             name = e.name + ("/" if e.is_dir() else "")
-            sz = f" {DIM}({format_size(st.st_size).strip()}){RESET}" if not e.is_dir() else ""
-            print(f"{prefix}{connector}{color}{name}{RESET}{sz}")
-            
+            sz = f" {dim}({format_size(st.st_size).strip()}){rst}" if not e.is_dir() else ""
+            print(f"{prefix}{connector}{icon} {color}{name}{rst}{sz}")
+
             if e.is_dir() and not e.is_symlink():
-                print_tree(e, prefix + child_prefix, level + 1, max_depth, show_hidden)
+                print_tree(e, prefix + child_prefix, level + 1, max_depth, show_hidden, ansi)
         except Exception:
             pass
 
 def main():
-    parser = argparse.ArgumentParser(description="tls: Modern directory and tree listing")
+    parser = argparse.ArgumentParser(description="tls: Modern tabular directory and tree listing", add_help=False)
+    parser.add_argument("--help", action="help", help="Show this help message and exit")
     parser.add_argument("path", nargs="?", default=".", help="Target directory or file")
-    parser.add_argument("-l", "--long", action="store_true", help="Detailed long listing")
-    parser.add_argument("-t", "--tree", action="store_true", help="Display tree structure")
+    parser.add_argument("-l", "--long", action="store_true", help="Detailed tabular listing")
     parser.add_argument("-a", "--all", action="store_true", help="Include hidden entries")
+    parser.add_argument("-A", "--almost-all", action="store_true", help="Include hidden entries except . and ..")
+    parser.add_argument("-t", "--time", action="store_true", help="Sort by modification time (newest first)")
+    parser.add_argument("-S", "--size", action="store_true", help="Sort by file size (largest first)")
+    parser.add_argument("-r", "--reverse", action="store_true", help="Reverse sort order")
+    parser.add_argument("-1", action="store_true", dest="one", help="One entry per line")
+    parser.add_argument("-T", "--tree", action="store_true", dest="tree", help="Display tree structure")
     parser.add_argument("-d", "--depth", type=int, default=3, help="Max depth for tree view")
-    args = parser.parse_args()
+    parser.add_argument("-h", action="store_true", dest="human", help="Human readable sizes (enabled by default)")
+
+    args, unknown = parser.parse_known_args()
+
+    # Piping / Non-TTY mode: output plain names for Unix script compatibility
+    if not sys.stdout.isatty() and not args.tree:
+        target = Path(args.path).resolve()
+        if target.is_file():
+            print(target.name)
+            return
+        try:
+            entries = sorted(list(target.iterdir()), key=lambda x: x.name.lower())
+            if not (args.all or args.almost_all):
+                entries = [e for e in entries if not e.name.startswith(".")]
+            for e in entries:
+                print(e.name)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    theme = get_active_theme()
+    ansi = theme.get("ansi", {})
+    b = "\033[1m"
+    p = ansi.get("primary", "\033[36m")
+    rst = "\033[0m"
 
     target = Path(args.path).resolve()
     if not target.exists():
-        print(f"{RED}Error: Path '{args.path}' does not exist.{RESET}", file=sys.stderr)
+        dang = ansi.get("danger", "\033[31m")
+        print(f"{dang}Error: Path '{args.path}' does not exist.{rst}", file=sys.stderr)
         sys.exit(1)
 
+    # Single file target
     if target.is_file():
         git_map = get_git_status_map(str(target.parent))
-        print_long_listing([target], git_map)
+        print_tabular_listing([target], git_map, ansi)
         return
 
+    # Tree view mode
     if args.tree:
-        print(f"{BOLD}{CYAN}{target.name}/{RESET}")
-        print_tree(target, max_depth=args.depth, show_hidden=args.all)
+        print(f"{b}{p}📁 {target.name}/{rst}")
+        print_tree(target, max_depth=args.depth, show_hidden=(args.all or args.almost_all), ansi=ansi)
         return
 
     try:
-        entries = sorted(list(target.iterdir()), key=lambda x: (not x.is_dir(), x.name.lower()))
-        if not args.all:
+        entries = list(target.iterdir())
+        if not (args.all or args.almost_all):
             entries = [e for e in entries if not e.name.startswith(".")]
-            
-        git_map = get_git_status_map(str(target))
-        if args.long:
-            print_long_listing(entries, git_map)
-        else:
-            # Multi-column or compact line view
+
+        # Determine sort method
+        sort_by = "time" if args.time else ("size" if args.size else "default")
+
+        # Single-column mode
+        if args.one:
+            if sort_by == "time":
+                entries.sort(key=lambda x: x.lstat().st_mtime, reverse=not args.reverse)
+            elif sort_by == "size":
+                entries.sort(key=lambda x: x.lstat().st_size, reverse=not args.reverse)
+            else:
+                entries.sort(key=lambda x: (not x.is_dir(), x.name.lower()), reverse=args.reverse)
+
             for e in entries:
                 st = e.lstat()
-                color = get_file_color(e, st.st_mode)
+                icon, color = get_file_icon_and_color(e, st.st_mode, ansi)
                 name = e.name + ("/" if e.is_dir() else "")
-                print(f"{color}{name}{RESET}")
+                print(f"{icon} {color}{name}{rst}")
+            return
+
+        # Tabular listing (default for tls / ls)
+        git_map = get_git_status_map(str(target))
+        print_tabular_listing(entries, git_map, ansi, sort_by=sort_by, reverse=args.reverse)
+
     except Exception as e:
-        print(f"{RED}Error: {e}{RESET}", file=sys.stderr)
+        dang = ansi.get("danger", "\033[31m")
+        print(f"{dang}Error: {e}{rst}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
