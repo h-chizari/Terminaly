@@ -152,7 +152,120 @@ def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict
         ]
         return goal_title, steps
 
-    # 5. Git Workflows
+    # 5. File & Folder Deletion / Cleanup (e.g. "can you delete invideo-ai video files.", "remove large videos", "delete those files")
+    is_delete_intent = has_fuzzy_match(words, ["delete", "remove", "rm", "erase", "trash", "purge", "clean", "cleanup", "wipe"])
+    # Exclude git branch cleanup (which has its own handler below)
+    if is_delete_intent and not has_fuzzy_match(words, ["branch", "branches"]):
+        noise = {
+            "can", "you", "please", "could", "would", "i", "want", "to", "delete", "remove", "rm",
+            "erase", "trash", "purge", "clean", "cleanup", "wipe", "the", "a", "an", "all", "these",
+            "those", "this", "that", "file", "files", "folder", "folders", "here", "them", "it", "me", "my"
+        }
+        type_words = {"video", "videos", "audio", "music", "photo", "photos", "image", "images", "doc", "docs", "document", "documents", "txt", "text", "pdf", "code"}
+        
+        candidates = [w.strip(".,!?\"'`:;()") for w in words if w.lower().strip(".,!?\"'`:;()").lstrip(".") not in noise]
+        # Prefer specific names over generic file types (e.g. prefer 'invideo-ai' over 'video')
+        specific_candidates = [c for c in candidates if c.lower() not in type_words]
+        target_pattern = specific_candidates[0] if specific_candidates else (candidates[0] if candidates else "")
+
+        # Extract session memory paths
+        session_history = context.get("session_history", [])
+        recent_paths = []
+        for hist in session_history:
+            for p_item in hist.get("paths_found", []):
+                if p_item not in recent_paths:
+                    recent_paths.append(p_item)
+
+        # Check if user said "those files", "them", "it", or no specific target
+        is_referring_prev = not target_pattern or any(w.lower() in ("those", "them", "it", "these", "that") for w in words)
+
+        if is_referring_prev and recent_paths:
+            file_targets = [p for p in recent_paths if not Path(p).is_dir()][:5]
+            if file_targets:
+                files_str = " ".join(f'"{f}"' for f in file_targets)
+                goal_title = f"Delete {len(file_targets)} file(s) discovered in previous step"
+                steps = [
+                    {
+                        "title": f"Review {len(file_targets)} target file(s) before deletion",
+                        "command": f"ls -lh {files_str}",
+                        "explain": "Inspects the exact files, paths, and disk sizes targeted for deletion.",
+                        "safety": "SAFE"
+                    },
+                    {
+                        "title": f"Permanently remove {len(file_targets)} target file(s)",
+                        "command": f"rm -v {files_str}",
+                        "explain": "Removes the specified files with verbose confirmation for each deletion.",
+                        "safety": "CAUTION"
+                    }
+                ]
+                return goal_title, steps
+
+        # Check if target matches files in recent_paths
+        matched_recent = []
+        if target_pattern:
+            for rp in recent_paths:
+                if target_pattern.lower() in rp.lower():
+                    matched_recent.append(rp)
+
+        if matched_recent:
+            files_str = " ".join(f'"{f}"' for f in matched_recent[:5])
+            goal_title = f"Delete '{target_pattern}' files discovered in previous step"
+            steps = [
+                {
+                    "title": f"Review '{target_pattern}' files before deletion",
+                    "command": f"ls -lh {files_str}",
+                    "explain": f"Displays details and sizes of '{target_pattern}' files before removing them.",
+                    "safety": "SAFE"
+                },
+                {
+                    "title": f"Permanently remove '{target_pattern}' files",
+                    "command": f"rm -v {files_str}",
+                    "explain": f"Deletes '{target_pattern}' files from disk with verbose removal logging.",
+                    "safety": "CAUTION"
+                }
+            ]
+            return goal_title, steps
+
+        # Search & destroy by pattern
+        clean_target = target_pattern if target_pattern else "*"
+        is_dir_del = any(k in p_lower for k in ["folder", "dir", "directory"])
+
+        if is_dir_del:
+            goal_title = f"Remove folder matching '{clean_target}'"
+            steps = [
+                {
+                    "title": f"Review directory matching '{clean_target}' before deletion",
+                    "command": f'find . -maxdepth 4 -type d -iname "*{clean_target}*" -not -path "*/.*" -exec du -sh {{}} + 2>/dev/null',
+                    "explain": f"Calculates folder size and confirms path for '{clean_target}' directory.",
+                    "safety": "SAFE"
+                },
+                {
+                    "title": f"Remove directory '{clean_target}'",
+                    "command": f'find . -maxdepth 4 -type d -iname "*{clean_target}*" -not -path "*/.*" -exec rm -rv {{}} + 2>/dev/null',
+                    "explain": f"Recursively deletes directory matching '{clean_target}'.",
+                    "safety": "CAUTION"
+                }
+            ]
+            return goal_title, steps
+        else:
+            goal_title = f"Delete files matching '{clean_target}'"
+            steps = [
+                {
+                    "title": f"Locate and preview files matching '{clean_target}' before deletion",
+                    "command": f'find . -type f -iname "*{clean_target}*" -not -path "*/.*" -exec ls -lh {{}} + 2>/dev/null',
+                    "explain": f"Lists all matching '{clean_target}' files with sizes and paths so you can review before deletion.",
+                    "safety": "SAFE"
+                },
+                {
+                    "title": f"Permanently remove files matching '{clean_target}'",
+                    "command": f'find . -type f -iname "*{clean_target}*" -not -path "*/.*" -exec rm -v {{}} + 2>/dev/null',
+                    "explain": f"Deletes all files matching '{clean_target}' with verbose removal logging.",
+                    "safety": "CAUTION"
+                }
+            ]
+            return goal_title, steps
+
+    # 6. Git Workflows
     if has_fuzzy_match(words, ["branch", "branches"]) and has_fuzzy_match(words, ["clean", "delete", "cleanup", "prune", "merged"]):
         goal_title = "Clean up merged local Git branches"
         steps = [
