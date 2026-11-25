@@ -49,6 +49,12 @@ function tfm() {
 # Alias to handle typo 'tmf'
 alias tmf="tfm"
 
+# AI Task & Workflow runner (Warp Terminal style)
+function task() {
+    "$TERMINALY_HOME/bin/terminaly" task "$@"
+}
+alias ask="task"
+
 # Record initial shell launch directory
 if whence -w _terminaly_chpwd_record >/dev/null 2>&1; then
     _terminaly_chpwd_record

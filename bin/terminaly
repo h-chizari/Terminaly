@@ -316,6 +316,8 @@ def print_help_card():
             ("thist", "Persistent SQLite command history search (or press Ctrl+R)"),
         ]),
         ("Git & AI Workflows", [
+            ("task '<goal>'", "Step-by-step AI task runner with live execution (Warp style)"),
+            ("ask '<question>'", "Ask AI for commands and run them interactively"),
             ("twt list", "List parallel git worktrees with branches and commit status"),
             ("twt add <branch>", "Create new worktree and branch under .worktrees/<branch>"),
             ("twt remove <branch>", "Remove a worktree safely"),
@@ -362,10 +364,23 @@ def main():
     p_theme.add_argument("action", nargs="?", default="picker", help="picker, list, set, or current")
     p_theme.add_argument("name", nargs="?", default="", help="Theme name to set")
 
+    p_task = subparsers.add_parser("task", help="Execute AI task step-by-step (Warp Terminal style)")
+    p_task.add_argument("query", nargs="*", help="Goal, question, or task to perform")
+
     args = parser.parse_args()
 
     if args.subcommand == "help":
         print_help_card()
+    elif args.subcommand == "task":
+        from core.ai_task import run_interactive_workflow
+        query_text = " ".join(args.query) if args.query else ""
+        if not query_text:
+            try:
+                query_text = input("What task would you like to accomplish? ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+        if query_text:
+            run_interactive_workflow(query_text)
     elif args.subcommand == "mux":
         run_multiplexer()
     elif args.subcommand == "scratch":
