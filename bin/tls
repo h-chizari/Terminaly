@@ -103,15 +103,7 @@ def get_git_status_map(target_dir: str) -> Dict[str, str]:
         pass
     return status_map
 
-def strip_ansi(s: str) -> str:
-    return re.sub(r'\033\[[0-9;]*m', '', s)
-
-def ansi_ljust(s: str, width: int) -> str:
-    vis_len = len(strip_ansi(s))
-    pad = max(0, width - vis_len)
-    return s + " " * pad
-
-def print_tabular_listing(entries: List[Path], git_map: Dict[str, str], ansi: Dict[str, str], sort_by: str = "default", reverse: bool = False):
+def print_clean_tabular(entries: List[Path], git_map: Dict[str, str], ansi: Dict[str, str], sort_by: str = "default", reverse: bool = False):
     term_width = shutil.get_terminal_size((80, 24)).columns
     b = "\033[1m"
     dim = "\033[2m"
@@ -121,7 +113,6 @@ def print_tabular_listing(entries: List[Path], git_map: Dict[str, str], ansi: Di
     warn = ansi.get("warning", "\033[33m")
     dang = ansi.get("danger", "\033[31m")
 
-    # Group into folders and files
     dirs = [e for e in entries if e.is_dir()]
     files = [e for e in entries if not e.is_dir()]
 
@@ -136,8 +127,6 @@ def print_tabular_listing(entries: List[Path], git_map: Dict[str, str], ansi: Di
         dirs.sort(key=lambda x: x.name.lower(), reverse=reverse)
         files.sort(key=lambda x: x.name.lower(), reverse=reverse)
 
-    all_sorted = dirs + files if not reverse or sort_by != "default" else (files + dirs if reverse and sort_by == "default" else dirs + files)
-
     total_dirs = len(dirs)
     total_files = len(files)
     total_bytes = 0
@@ -148,80 +137,79 @@ def print_tabular_listing(entries: List[Path], git_map: Dict[str, str], ansi: Di
         except Exception:
             pass
 
-    show_extended = term_width >= 90
+    show_extended = term_width >= 72
+    rule_len = min(term_width, 90)
 
-    # Column widths
-    type_col_w = 4
-    sz_col_w = 12
-    mod_col_w = 14
-    perms_col_w = 11 if show_extended else 0
-    git_col_w = 6 if show_extended else 0
-
-    borders_w = 13 if show_extended else 10
-    fixed_w = type_col_w + sz_col_w + mod_col_w + perms_col_w + git_col_w + borders_w
-    name_col_w = max(20, min(50, term_width - fixed_w))
-
-    # Borders
+    # Header
     if show_extended:
-        top_border = f"{dim}┌─{'─'*type_col_w}─┬─{'─'*name_col_w}─┬─{'─'*sz_col_w}─┬─{'─'*mod_col_w}─┬─{'─'*perms_col_w}─┬─{'─'*git_col_w}─┐{rst}"
-        hdr = f"{dim}│{rst} {b}{'Type'.ljust(type_col_w)}{rst} {dim}│{rst} {b}{'Name'.ljust(name_col_w)}{rst} {dim}│{rst} {b}{'Size / Items'.rjust(sz_col_w)}{rst} {dim}│{rst} {b}{'Modified'.ljust(mod_col_w)}{rst} {dim}│{rst} {b}{'Perms'.ljust(perms_col_w)}{rst} {dim}│{rst} {b}{'Git'.ljust(git_col_w)}{rst} {dim}│{rst}"
-        mid_border = f"{dim}├─{'─'*type_col_w}─┼─{'─'*name_col_w}─┼─{'─'*sz_col_w}─┼─{'─'*mod_col_w}─┼─{'─'*perms_col_w}─┼─{'─'*git_col_w}─┤{rst}"
-        bot_border = f"{dim}└─{'─'*type_col_w}─┴─{'─'*name_col_w}─┴─{'─'*sz_col_w}─┴─{'─'*mod_col_w}─┴─{'─'*perms_col_w}─┴─{'─'*git_col_w}─┘{rst}"
+        hdr = f"{dim}{b}{'PERMS'.ljust(11)}  {'SIZE / ITEMS'.rjust(12)}  {'MODIFIED'.ljust(12)}  {'NAME'}{rst}"
     else:
-        top_border = f"{dim}┌─{'─'*type_col_w}─┬─{'─'*name_col_w}─┬─{'─'*sz_col_w}─┬─{'─'*mod_col_w}─┐{rst}"
-        hdr = f"{dim}│{rst} {b}{'Type'.ljust(type_col_w)}{rst} {dim}│{rst} {b}{'Name'.ljust(name_col_w)}{rst} {dim}│{rst} {b}{'Size / Items'.rjust(sz_col_w)}{rst} {dim}│{rst} {b}{'Modified'.ljust(mod_col_w)}{rst} {dim}│{rst}"
-        mid_border = f"{dim}├─{'─'*type_col_w}─┼─{'─'*name_col_w}─┼─{'─'*sz_col_w}─┼─{'─'*mod_col_w}─┤{rst}"
-        bot_border = f"{dim}└─{'─'*type_col_w}─┴─{'─'*name_col_w}─┴─{'─'*sz_col_w}─┴─{'─'*mod_col_w}─┘{rst}"
+        hdr = f"{dim}{b}{'SIZE / ITEMS'.rjust(12)}  {'MODIFIED'.ljust(12)}  {'NAME'}{rst}"
 
-    print(top_border)
     print(hdr)
-    print(mid_border)
+    print(f"{dim}{'─' * rule_len}{rst}")
 
-    for idx, e in enumerate(all_sorted):
-        # Insert divider between directories and files
-        if dirs and idx == len(dirs):
-            print(mid_border)
-
+    # Render Folders
+    for d in dirs:
         try:
-            st = e.lstat()
-            is_dir = stat.S_ISDIR(st.st_mode)
-            icon, color = get_file_icon_and_color(e, st.st_mode, ansi)
-
-            if is_dir:
-                sz_str = get_dir_item_count(e)
-                sz_color = warn
-            else:
-                sz_str = format_size(st.st_size)
-                sz_color = suc
-
+            st = d.lstat()
+            sz_str = get_dir_item_count(d)
             mtime_str = format_mtime(st.st_mtime)
             perms_str = format_perms(st.st_mode)
 
-            display_name = e.name + ("/" if is_dir else "")
-            if e.is_symlink():
+            rel = os.path.relpath(str(d), ".")
+            gst = git_map.get(rel, "")
+            gst_str = f" {warn}[{gst}]{rst}" if gst else ""
+
+            name_display = f"{d.name}/"
+            if d.is_symlink():
                 try:
-                    display_name += f" -> {os.readlink(e)}"
+                    name_display += f" -> {os.readlink(d)}"
                 except Exception:
                     pass
 
-            if len(display_name) > name_col_w:
-                display_name = display_name[:name_col_w - 3] + "..."
-
-            rel = os.path.relpath(str(e), ".")
-            gst = git_map.get(rel, "")
-            gst_badge = f"{warn}[{gst}]{rst}" if gst else ""
-
             if show_extended:
-                pad_git = ansi_ljust(gst_badge, git_col_w)
-                print(f"{dim}│{rst} {icon:<3} {dim}│{rst} {color}{display_name.ljust(name_col_w)}{rst} {dim}│{rst} {sz_color}{sz_str.rjust(sz_col_w)}{rst} {dim}│{rst} {dim}{mtime_str.ljust(mod_col_w)}{rst} {dim}│{rst} {dim}{perms_str.ljust(perms_col_w)}{rst} {dim}│{rst} {pad_git} {dim}│{rst}")
+                print(f"{dim}{perms_str}{rst}  {warn}{sz_str.rjust(12)}{rst}  {dim}{mtime_str.ljust(12)}{rst}  📁 {b}{p}{name_display}{rst}{gst_str}")
             else:
-                print(f"{dim}│{rst} {icon:<3} {dim}│{rst} {color}{display_name.ljust(name_col_w)}{rst} {dim}│{rst} {sz_color}{sz_str.rjust(sz_col_w)}{rst} {dim}│{rst} {dim}{mtime_str.ljust(mod_col_w)}{rst} {dim}│{rst}")
-
+                print(f"{warn}{sz_str.rjust(12)}{rst}  {dim}{mtime_str.ljust(12)}{rst}  📁 {b}{p}{name_display}{rst}{gst_str}")
         except Exception:
             pass
 
-    print(bot_border)
-    print(f"  {dim}Total: {total_dirs} directories, {total_files} files ({format_size(total_bytes).strip()}){rst}\n")
+    # Divider between folders and files
+    if dirs and files:
+        print(f"{dim}{'─' * rule_len}{rst}")
+
+    # Render Files
+    for f in files:
+        try:
+            st = f.lstat()
+            sz_str = format_size(st.st_size)
+            mtime_str = format_mtime(st.st_mtime)
+            perms_str = format_perms(st.st_mode)
+            icon, color = get_file_icon_and_color(f, st.st_mode, ansi)
+
+            rel = os.path.relpath(str(f), ".")
+            gst = git_map.get(rel, "")
+            gst_str = f" {warn}[{gst}]{rst}" if gst else ""
+
+            name_display = f.name
+            if f.is_symlink():
+                try:
+                    name_display += f" -> {os.readlink(f)}"
+                except Exception:
+                    pass
+
+            # Normalize icon space
+            icon_prefix = f"{icon} " if not icon.endswith(" ") else icon
+
+            if show_extended:
+                print(f"{dim}{perms_str}{rst}  {suc}{sz_str.rjust(12)}{rst}  {dim}{mtime_str.ljust(12)}{rst}  {icon_prefix}{color}{name_display}{rst}{gst_str}")
+            else:
+                print(f"{suc}{sz_str.rjust(12)}{rst}  {dim}{mtime_str.ljust(12)}{rst}  {icon_prefix}{color}{name_display}{rst}{gst_str}")
+        except Exception:
+            pass
+
+    print(f"\n  {dim}Total: {total_dirs} directories, {total_files} files ({format_size(total_bytes).strip()}){rst}\n")
 
 def print_tree(dir_path: Path, prefix: str = "", level: int = 0, max_depth: int = 3, show_hidden: bool = False, ansi: Dict[str, str] = None):
     if level >= max_depth:
@@ -248,7 +236,8 @@ def print_tree(dir_path: Path, prefix: str = "", level: int = 0, max_depth: int 
             icon, color = get_file_icon_and_color(e, st.st_mode, ansi or {})
             name = e.name + ("/" if e.is_dir() else "")
             sz = f" {dim}({format_size(st.st_size).strip()}){rst}" if not e.is_dir() else ""
-            print(f"{prefix}{connector}{icon} {color}{name}{rst}{sz}")
+            icon_prefix = f"{icon} " if not icon.endswith(" ") else icon
+            print(f"{prefix}{connector}{icon_prefix}{color}{name}{rst}{sz}")
 
             if e.is_dir() and not e.is_symlink():
                 print_tree(e, prefix + child_prefix, level + 1, max_depth, show_hidden, ansi)
@@ -304,7 +293,7 @@ def main():
     # Single file target
     if target.is_file():
         git_map = get_git_status_map(str(target.parent))
-        print_tabular_listing([target], git_map, ansi)
+        print_clean_tabular([target], git_map, ansi)
         return
 
     # Tree view mode
@@ -334,12 +323,13 @@ def main():
                 st = e.lstat()
                 icon, color = get_file_icon_and_color(e, st.st_mode, ansi)
                 name = e.name + ("/" if e.is_dir() else "")
-                print(f"{icon} {color}{name}{rst}")
+                icon_prefix = f"{icon} " if not icon.endswith(" ") else icon
+                print(f"{icon_prefix}{color}{name}{rst}")
             return
 
-        # Tabular listing (default for tls / ls)
+        # Modern Clean Tabular listing (default for tls / ls)
         git_map = get_git_status_map(str(target))
-        print_tabular_listing(entries, git_map, ansi, sort_by=sort_by, reverse=args.reverse)
+        print_clean_tabular(entries, git_map, ansi, sort_by=sort_by, reverse=args.reverse)
 
     except Exception as e:
         dang = ansi.get("danger", "\033[31m")
