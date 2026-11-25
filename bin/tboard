@@ -156,7 +156,7 @@ def run_dashboard(stdscr):
 
         # Bottom Bar Hotkeys
         footer = " [↑/↓] Select Worktree  [r] Refresh  [q] Quit "
-        safe_addstr(stdscr, max_y - 1, 0, footer.ljust(max_x),
+        safe_addstr(stdscr, max_y - 1, 0, footer.ljust(max(0, max_x - 1)),
                     curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE)
 
         stdscr.refresh()

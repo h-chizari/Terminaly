@@ -33,8 +33,15 @@ def safe_addstr(win, y: int, x: int, text: str, attr: int = 0):
     max_y, max_x = win.getmaxyx()
     if 0 <= y < max_y and 0 <= x < max_x:
         avail = max_x - x
+        # Avoid writing to the bottom-right corner cell (max_y - 1, max_x - 1)
+        # because ncurses returns ERR when advancing cursor past the bottom-right corner.
+        if y == max_y - 1:
+            avail = max(0, avail - 1)
         if avail > 0:
-            win.addstr(y, x, text[:avail], attr)
+            try:
+                win.addstr(y, x, text[:avail], attr)
+            except curses.error:
+                pass
 
 def draw_box(win, y: int, x: int, h: int, w: int, title: str = "", attr: int = 0):
     for i in range(h):
@@ -158,7 +165,7 @@ class InteractivePicker:
 
             # Bottom Status Bar
             status_text = " [Enter] Select  [Esc/Ctrl+C] Cancel  [↑/↓] Navigate "
-            safe_addstr(stdscr, max_y - 1, 0, status_text.ljust(max_x),
+            safe_addstr(stdscr, max_y - 1, 0, status_text.ljust(max(0, max_x - 1)),
                         curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE)
 
             # Position Cursor
