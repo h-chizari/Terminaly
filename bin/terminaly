@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.curses_ui import InteractivePicker
 from core.sysinfo import get_system_summary
 from core.db import query_frecency, get_history_stats, ensure_terminaly_dir
-from core.theme import THEMES, get_theme_name, set_theme_name
+from core.theme import THEMES, get_theme_name, set_theme_name, get_active_theme
 
 # ==================== PTY MULTIPLEXER ====================
 
@@ -286,12 +286,73 @@ def run_theme(action: str = "picker", target: str = ""):
         t = THEMES[chosen]
         print(f"\n\033[32m✓ Activated theme:\033[0m \033[1m{t['name']}\033[0m ({chosen})\n")
 
+# ==================== HELP CARD ====================
+
+def print_help_card():
+    theme = get_active_theme()
+    ansi = theme.get("ansi", {})
+    p = ansi.get("primary", "\033[36m")
+    s = ansi.get("secondary", "\033[34m")
+    acc = ansi.get("accent", "\033[35m")
+    suc = ansi.get("success", "\033[32m")
+    b = "\033[1m"
+    dim = "\033[2m"
+    rst = "\033[0m"
+
+    print(f"\n{b}{p}========================================================================{rst}")
+    print(f"{b}{p}                Terminaly: macOS Native Command Reference               {rst}")
+    print(f"{b}{p}========================================================================{rst}\n")
+
+    sections = [
+        ("File Management & Navigation", [
+            ("tfm", "Dual-pane visual file manager (press ':' for bottom shell prompt)"),
+            ("tls -t", "Render directory tree with file sizes and color badges"),
+            ("tls -l (or ll)", "Detailed long listing with permissions and git status flags"),
+            ("z <query>", "Smart directory jumping using SQLite frecency scoring"),
+        ]),
+        ("Structured Data & Universal Search", [
+            ("tq '<sql>'", "Query JSON, CSV, or SQLite using SQL (e.g. cat file.json | tq)"),
+            ("tfzf", "Universal fuzzy finder with live preview (--channel=files/proc/git)"),
+            ("thist", "Persistent SQLite command history search (or press Ctrl+R)"),
+        ]),
+        ("Git & AI Workflows", [
+            ("twt list", "List parallel git worktrees with branches and commit status"),
+            ("twt add <branch>", "Create new worktree and branch under .worktrees/<branch>"),
+            ("twt remove <branch>", "Remove a worktree safely"),
+            ("tboard", "Parallel AI Agent & Git Worktree curses dashboard"),
+            ("tai ask '<msg>'", "Send task to Antigravity AI agent with ASD-STE100 rules"),
+            ("tai sessions", "List recent Antigravity conversation sessions"),
+        ]),
+        ("Session & Customization", [
+            ("terminaly theme", "Open interactive theme switcher (Latte, Catppuccin, Tokyo Night, etc.)"),
+            ("terminaly theme list", "List all available color themes with color swatches"),
+            ("terminaly session", "Fuzzy session & project switcher with directory preview"),
+            ("terminaly scratch", "Toggle floating persistent scratchpad terminal (or Ctrl+\\)"),
+            ("terminaly doctor", "Run diagnostic environment health check"),
+        ]),
+        ("Ergonomic Keyboard Shortcuts", [
+            ("Ctrl + R", "Interactive persistent command history search (Atuin style)"),
+            ("Ctrl + T", "Fuzzy file search and insertion into current command buffer"),
+            ("Alt + C (or Esc+C)", "Fuzzy directory jump in terminal"),
+            ("Ctrl + \\", "Toggle floating scratchpad terminal window"),
+            (":", "Activate shell command prompt inside tfm file manager"),
+        ]),
+    ]
+
+    for title, cmds in sections:
+        print(f"  {b}{acc}▶ {title}{rst}")
+        for cmd_name, desc in cmds:
+            print(f"    {b}{s}{cmd_name.ljust(22)}{rst} {desc}")
+        print()
+    print(f"  {dim}For full documentation: see README.md in Terminaly root{rst}\n")
+
 # ==================== MAIN ====================
 
 def main():
     parser = argparse.ArgumentParser(description="Terminaly: Offline macOS Native Terminal Framework")
     subparsers = parser.add_subparsers(dest="subcommand")
 
+    subparsers.add_parser("help", help="Display Terminaly command reference card")
     subparsers.add_parser("mux", help="Start pure-Python PTY multiplexer with live telemetry bar")
     subparsers.add_parser("scratch", help="Toggle floating persistent scratchpad terminal")
     subparsers.add_parser("session", help="Launch interactive fuzzy session & project switcher")
@@ -303,7 +364,9 @@ def main():
 
     args = parser.parse_args()
 
-    if args.subcommand == "mux":
+    if args.subcommand == "help":
+        print_help_card()
+    elif args.subcommand == "mux":
         run_multiplexer()
     elif args.subcommand == "scratch":
         toggle_scratchpad()
@@ -314,7 +377,7 @@ def main():
     elif args.subcommand == "theme":
         run_theme(args.action, args.name)
     else:
-        parser.print_help()
+        print_help_card()
 
 if __name__ == "__main__":
     main()

@@ -24,6 +24,11 @@ except Exception:
     pass
 " 2>/dev/null
 
+# Command reference & help shortcut
+function help() {
+    "$TERMINALY_HOME/bin/terminaly" help
+}
+
 # Record initial shell launch directory
 if whence -w _terminaly_chpwd_record >/dev/null 2>&1; then
     _terminaly_chpwd_record
