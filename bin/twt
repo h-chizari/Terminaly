@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""twt: High-level Git Worktree Lifecycle Manager (Worktrunk equivalent)."""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Dict
+
+# Styling
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+def get_git_root() -> Path:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return Path(out)
+    except Exception:
+        print(f"{RED}Error: Not inside a Git repository.{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+def list_worktrees() -> List[Dict[str, str]]:
+    out = subprocess.check_output(["git", "worktree", "list", "--porcelain"], text=True)
+    worktrees = []
+    current_entry: Dict[str, str] = {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            if current_entry:
+                worktrees.append(current_entry)
+            current_entry = {"path": line.split(" ", 1)[1].strip()}
+        elif line.startswith("HEAD "):
+            current_entry["head"] = line.split(" ", 1)[1].strip()[:7]
+        elif line.startswith("branch "):
+            current_entry["branch"] = line.split(" ", 1)[1].strip().replace("refs/heads/", "")
+        elif line == "bare":
+            current_entry["bare"] = "true"
+        elif line == "detached":
+            current_entry["branch"] = "(detached)"
+    if current_entry:
+        worktrees.append(current_entry)
+    return worktrees
+
+def cmd_list(args):
+    trees = list_worktrees()
+    if not trees:
+        print("No worktrees found.")
+        return
+
+    print(f"\n{BOLD}{'Branch'.ljust(25)} {'Commit'.ljust(10)} {'Path'}{RESET}")
+    print("─" * 70)
+    for t in trees:
+        b = t.get("branch", "(unknown)")
+        h = t.get("head", "-")
+        p = t.get("path", "")
+        # Highlight main worktree
+        color = GREEN if t == trees[0] else CYAN
+        print(f"{color}{b.ljust(25)}{RESET} {DIM}{h.ljust(10)}{RESET} {p}")
+    print()
+
+def cmd_add(args):
+    root = get_git_root()
+    branch = args.branch
+    wt_dir = root / ".worktrees" / branch
+    
+    if wt_dir.exists():
+        print(f"{RED}Error: Worktree path already exists at {wt_dir}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    wt_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    # Check if branch already exists
+    branches_out = subprocess.check_output(["git", "branch", "--all"], text=True)
+    branch_exists = any(b.strip().lstrip("* ").endswith(branch) for b in branches_out.splitlines())
+
+    cmd = ["git", "worktree", "add"]
+    if not branch_exists:
+        cmd.extend(["-b", branch, str(wt_dir)])
+        if args.base:
+            cmd.append(args.base)
+    else:
+        cmd.extend([str(wt_dir), branch])
+
+    try:
+        subprocess.check_call(cmd)
+        print(f"{GREEN}✓ Successfully created worktree for '{branch}' at:{RESET} {wt_dir}")
+
+        # Automatically copy untracked .env if it exists in main worktree
+        main_env = root / ".env"
+        if main_env.exists() and not (wt_dir / ".env").exists():
+            shutil.copy(main_env, wt_dir / ".env")
+            print(f"{DIM}  Copied .env to new worktree{RESET}")
+
+        print(f"\nTo jump into the new worktree:\n  {BOLD}cd {wt_dir}{RESET}\n")
+    except Exception as e:
+        print(f"{RED}Failed to create worktree: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+def cmd_remove(args):
+    trees = list_worktrees()
+    branch = args.branch
+    target_tree = next((t for t in trees if t.get("branch") == branch), None)
+    if not target_tree:
+        print(f"{RED}Error: No worktree found with branch '{branch}'.{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    path = target_tree["path"]
+    try:
+        subprocess.check_call(["git", "worktree", "remove", path])
+        print(f"{GREEN}✓ Removed worktree for '{branch}' ({path}){RESET}")
+    except Exception as e:
+        print(f"{RED}Failed to remove worktree: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+def cmd_prune(args):
+    try:
+        subprocess.check_call(["git", "worktree", "prune", "-v"])
+        print(f"{GREEN}✓ Pruned stale worktree records.{RESET}")
+    except Exception as e:
+        print(f"{RED}Error pruning worktrees: {e}{RESET}", file=sys.stderr)
+
+def main():
+    parser = argparse.ArgumentParser(description="twt: Git Worktree Lifecycle Manager")
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    p_list = subparsers.add_parser("list", help="List active worktrees")
+    p_add = subparsers.add_parser("add", help="Create new worktree and branch")
+    p_add.add_argument("branch", help="Branch name for worktree")
+    p_add.add_argument("base", nargs="?", default="", help="Base branch/commit to branch off")
+    
+    p_rm = subparsers.add_parser("remove", help="Remove an existing worktree")
+    p_rm.add_argument("branch", help="Branch name of worktree to remove")
+
+    subparsers.add_parser("prune", help="Prune obsolete worktree references")
+
+    args = parser.parse_args()
+
+    if args.subcommand == "add":
+        cmd_add(args)
+    elif args.subcommand == "remove":
+        cmd_remove(args)
+    elif args.subcommand == "prune":
+        cmd_prune(args)
+    else:
+        cmd_list(args)
+
+if __name__ == "__main__":
+    main()

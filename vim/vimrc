@@ -1,0 +1,87 @@
+" Terminaly Native Vim 9.1 IDE Configuration
+" Modern IDE experience without external plugins or downloads
+
+" General Settings
+set nocompatible
+filetype plugin indent on
+syntax on
+set encoding=utf-8
+set mouse=a
+set clipboard=unnamed
+
+" UI & Layout
+set number
+set relativenumber
+set cursorline
+set scrolloff=8
+set sidescrolloff=8
+set showcmd
+set showmode
+set laststatus=2
+set ruler
+set wildmenu
+set wildmode=longest:full,full
+
+" Colors & Rendering
+if has('termguicolors')
+    set termguicolors
+endif
+set background=dark
+
+" Tabs & Indentation
+set tabstop=4
+set shiftwidth=4
+set softtabstop=4
+set expandtab
+set autoindent
+set smartindent
+
+" Search Behavior
+set incsearch
+set hlsearch
+set ignorecase
+set smartcase
+
+" Splits Management
+set splitbelow
+set splitright
+nnoremap <C-h> <C-w>h
+nnoremap <C-j> <C-w>j
+nnoremap <C-k> <C-w>k
+nnoremap <C-l> <C-w>l
+
+" Netrw File Explorer (NERDTree equivalent)
+let g:netrw_banner = 0
+let g:netrw_liststyle = 3
+let g:netrw_browse_split = 4
+let g:netrw_winsize = 25
+let g:netrw_altv = 1
+nnoremap <silent> <C-e> :Lexplore<CR>
+nnoremap <silent> <leader>e :Lexplore<CR>
+
+" Integrated Terminal (Bottom Drawer)
+if has('terminal')
+    nnoremap <silent> <leader>t :botright 12terminal ++close<CR>
+    " Escape terminal mode easily
+    tnoremap <Esc> <C-\><C-n>
+endif
+
+" Statusline with Git Branch & Position
+function! GitBranch()
+    let l:branch = system("git branch --show-current 2>/dev/null | tr -d '\n'")
+    return strlen(l:branch) > 0 ? '  ⎇ ' . l:branch . ' ' : ''
+endfunction
+
+set statusline=
+set statusline+=%#DiffAdd#%{GitBranch()}%*
+set statusline+=\ %f\ %m%r%h%w
+set statusline+=%=
+set statusline+=%y\ 
+set statusline+=[%{&fileencoding?&fileencoding:&encoding}]\ 
+set statusline+=%l/%L:%c\ 
+set statusline+=%P\ 
+
+" Antigravity AI Code Bridge
+let mapleader = " "
+vnoremap <leader>ai :w !tai ask "Review this code snippet"<CR>
+nnoremap <leader>ai :!tai ask "Review this file" -f %<CR>

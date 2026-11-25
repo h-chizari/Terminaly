@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""tfm: Visual Dual-Pane TUI File Explorer with Previews & Clipboard (Superfile equivalent)."""
+
+import curses
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import List, Optional
+
+# Ensure core is on path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.curses_ui import TerminalColors, safe_addstr, draw_box
+
+class FileManager:
+    def __init__(self, start_dir: str = "."):
+        self.cwd = Path(start_dir).resolve()
+        self.entries: List[Path] = []
+        self.selected_idx = 0
+        self.scroll_offset = 0
+        self.clipboard_path: Optional[Path] = None
+        self.clipboard_op: Optional[str] = None  # 'copy' or 'cut'
+        self.bookmarks: List[Path] = [Path.home(), Path.cwd()]
+        self.status_message = ""
+        self.filter_query = ""
+        self.refresh_entries()
+
+    def refresh_entries(self):
+        try:
+            raw = list(self.cwd.iterdir())
+            # Sort: directories first, then alphabetical
+            self.entries = sorted(raw, key=lambda p: (not p.is_dir(), p.name.lower()))
+            if self.filter_query:
+                q = self.filter_query.lower()
+                self.entries = [e for e in self.entries if q in e.name.lower()]
+        except Exception as e:
+            self.status_message = f"Error reading directory: {e}"
+            self.entries = []
+        self.selected_idx = min(self.selected_idx, max(0, len(self.entries) - 1))
+
+    def get_preview_lines(self, entry: Path, max_lines: int) -> List[str]:
+        if not entry.exists():
+            return ["Item does not exist."]
+        if entry.is_dir():
+            try:
+                sub = list(entry.iterdir())
+                lines = [f"📁 Directory: {entry.name}", f"Total items: {len(sub)}", ""]
+                for s in sub[:max_lines - 4]:
+                    icon = "📁" if s.is_dir() else "📄"
+                    lines.append(f"  {icon} {s.name}")
+                return lines
+            except Exception as e:
+                return [f"Permission denied: {e}"]
+        try:
+            lines = []
+            with open(entry, "r", encoding="utf-8", errors="replace") as f:
+                for idx, line in enumerate(f):
+                    if idx >= max_lines:
+                        lines.append("... [truncated]")
+                        break
+                    lines.append(f"{idx+1:3d} │ {line.rstrip()}")
+            return lines or ["(Empty file)"]
+        except Exception:
+            # Binary file
+            try:
+                st = entry.stat()
+                return [
+                    f"📄 Binary File: {entry.name}",
+                    f"Size: {st.st_size:,} bytes",
+                    f"Modified: {time.ctime(st.st_mtime)}"
+                ]
+            except Exception as e:
+                return [str(e)]
+
+    def run(self):
+        curses.wrapper(self._main)
+
+    def _main(self, stdscr):
+        TerminalColors.init_colors()
+        curses.curs_set(0)
+        stdscr.timeout(200)
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+            if max_y < 12 or max_x < 60:
+                safe_addstr(stdscr, 0, 0, "Window too small for file manager!")
+                stdscr.refresh()
+                k = stdscr.getch()
+                if k in (ord('q'), 27):
+                    break
+                continue
+
+            # Header
+            header = f" tfm File Manager │ {self.cwd} "
+            if self.clipboard_path:
+                header += f" [{self.clipboard_op.upper()}: {self.clipboard_path.name}]"
+            safe_addstr(stdscr, 0, 0, header.ljust(max_x),
+                        curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE | curses.A_BOLD)
+
+            # Dimensions
+            left_w = int(max_x * 0.45)
+            right_w = max_x - left_w
+            body_h = max_y - 3
+
+            # Draw Left Pane (File List)
+            draw_box(stdscr, 1, 0, body_h, left_w, title=f"Contents ({len(self.entries)})",
+                     attr=curses.color_pair(TerminalColors.PAIR_HEADER))
+
+            visible_count = body_h - 2
+            if self.selected_idx < self.scroll_offset:
+                self.scroll_offset = self.selected_idx
+            elif self.selected_idx >= self.scroll_offset + visible_count:
+                self.scroll_offset = self.selected_idx - visible_count + 1
+
+            for i in range(visible_count):
+                idx = self.scroll_offset + i
+                if idx < len(self.entries):
+                    item = self.entries[idx]
+                    y = 2 + i
+                    is_dir = item.is_dir()
+                    icon = "📁 " if is_dir else "📄 "
+                    name = item.name + ("/" if is_dir else "")
+                    
+                    if idx == self.selected_idx:
+                        attr = curses.color_pair(TerminalColors.PAIR_HIGHLIGHT) | curses.A_BOLD
+                        line_str = f"❯ {icon}{name}"
+                    else:
+                        attr = curses.color_pair(TerminalColors.PAIR_HEADER) if is_dir else curses.color_pair(TerminalColors.PAIR_DEFAULT)
+                        line_str = f"  {icon}{name}"
+
+                    safe_addstr(stdscr, y, 1, line_str.ljust(left_w - 2), attr)
+
+            # Draw Right Pane (Preview)
+            draw_box(stdscr, 1, left_w, body_h, right_w, title="Preview & Inspector",
+                     attr=curses.color_pair(TerminalColors.PAIR_DEFAULT))
+
+            if self.entries:
+                curr_item = self.entries[self.selected_idx]
+                preview_lines = self.get_preview_lines(curr_item, body_h - 2)
+                for i, pl in enumerate(preview_lines[:body_h - 2]):
+                    safe_addstr(stdscr, 2 + i, left_w + 2, pl[:right_w - 4],
+                                curses.color_pair(TerminalColors.PAIR_DEFAULT))
+
+            # Status Message
+            if self.status_message:
+                safe_addstr(stdscr, max_y - 2, 0, f" {self.status_message} "[:max_x],
+                            curses.color_pair(TerminalColors.PAIR_WARNING))
+
+            # Footer
+            footer = " [Enter] Open  [c] Copy  [x] Cut  [v] Paste  [d] Delete  [q] Quit "
+            safe_addstr(stdscr, max_y - 1, 0, footer.ljust(max_x),
+                        curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE)
+
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key in (ord('q'), 27):
+                break
+            elif key in (curses.KEY_UP, ord('k')):
+                if self.selected_idx > 0:
+                    self.selected_idx -= 1
+            elif key in (curses.KEY_DOWN, ord('j')):
+                if self.selected_idx < len(self.entries) - 1:
+                    self.selected_idx += 1
+            elif key in (curses.KEY_LEFT, ord('h')):
+                # Go up to parent directory
+                if self.cwd != self.cwd.parent:
+                    self.cwd = self.cwd.parent
+                    self.filter_query = ""
+                    self.selected_idx = 0
+                    self.refresh_entries()
+            elif key in (curses.KEY_RIGHT, ord('l'), 10, 13):
+                # Open directory or edit file
+                if self.entries:
+                    target = self.entries[self.selected_idx]
+                    if target.is_dir():
+                        self.cwd = target
+                        self.filter_query = ""
+                        self.selected_idx = 0
+                        self.refresh_entries()
+                    else:
+                        # Open in editor
+                        curses.endwin()
+                        editor = os.environ.get("EDITOR", "/usr/bin/vim")
+                        subprocess.call([editor, str(target)])
+                        # Return to curses
+                        stdscr = curses.initscr()
+                        TerminalColors.init_colors()
+                        self.refresh_entries()
+            elif key == ord('c'):
+                # Copy
+                if self.entries:
+                    self.clipboard_path = self.entries[self.selected_idx]
+                    self.clipboard_op = "copy"
+                    self.status_message = f"Copied '{self.clipboard_path.name}' to clipboard."
+            elif key == ord('x'):
+                # Cut
+                if self.entries:
+                    self.clipboard_path = self.entries[self.selected_idx]
+                    self.clipboard_op = "cut"
+                    self.status_message = f"Cut '{self.clipboard_path.name}' to clipboard."
+            elif key == ord('v'):
+                # Paste
+                if self.clipboard_path and self.clipboard_path.exists():
+                    dest = self.cwd / self.clipboard_path.name
+                    try:
+                        if self.clipboard_op == "cut":
+                            shutil.move(str(self.clipboard_path), str(dest))
+                            self.status_message = f"Moved to {dest.name}"
+                            self.clipboard_path = None
+                        else:
+                            if self.clipboard_path.is_dir():
+                                shutil.copytree(str(self.clipboard_path), str(dest))
+                            else:
+                                shutil.copy2(str(self.clipboard_path), str(dest))
+                            self.status_message = f"Copied to {dest.name}"
+                        self.refresh_entries()
+                    except Exception as e:
+                        self.status_message = f"Paste failed: {e}"
+            elif key == ord('d'):
+                # Delete
+                if self.entries:
+                    target = self.entries[self.selected_idx]
+                    try:
+                        if target.is_dir():
+                            shutil.rmtree(str(target))
+                        else:
+                            target.unlink()
+                        self.status_message = f"Deleted '{target.name}'"
+                        self.refresh_entries()
+                    except Exception as e:
+                        self.status_message = f"Delete failed: {e}"
+
+def main():
+    start = sys.argv[1] if len(sys.argv) > 1 else "."
+    fm = FileManager(start)
+    try:
+        fm.run()
+    except KeyboardInterrupt:
+        pass
+
+if __name__ == "__main__":
+    main()

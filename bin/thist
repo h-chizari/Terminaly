@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""thist: SQLite-backed persistent command history manager and interactive TUI (Atuin equivalent)."""
+
+import argparse
+import datetime
+import os
+import sys
+import time
+from pathlib import Path
+from typing import List, Tuple, Any
+
+# Ensure core is on path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.db import record_command, search_history, get_history_stats
+from core.curses_ui import InteractivePicker
+
+def format_relative_time(timestamp: float) -> str:
+    diff = time.time() - timestamp
+    if diff < 60:
+        return f"{int(diff)}s ago"
+    elif diff < 3600:
+        return f"{int(diff/60)}m ago"
+    elif diff < 86400:
+        return f"{int(diff/3600)}h ago"
+    else:
+        days = int(diff / 86400)
+        return f"{days}d ago"
+
+def run_tui(initial_query: str = ""):
+    rows = search_history(limit=500)
+    if not rows:
+        print("No history found in database.", file=sys.stderr)
+        sys.exit(1)
+
+    items: List[Tuple[str, Any]] = []
+    for r in rows:
+        st = "✓" if r["exit_code"] == 0 else "✗"
+        dur = f"{r['duration']:.1f}s" if r["duration"] > 0 else ""
+        rel_time = format_relative_time(r["timestamp"])
+        cmd = r["command"]
+        
+        # Display line: [✓] 2m ago  ls -la
+        disp = f"[{st}] {rel_time.ljust(8)} │ {cmd}"
+        items.append((disp, cmd))
+
+    def preview_fn(cmd_str: str) -> List[str]:
+        # Find detail for this command
+        matches = [r for r in rows if r["command"] == cmd_str]
+        if not matches:
+            return [f"Command: {cmd_str}"]
+        latest = matches[0]
+        dt = datetime.datetime.fromtimestamp(latest["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+        status_text = "Success (exit 0)" if latest["exit_code"] == 0 else f"Failed (exit {latest['exit_code']})"
+        return [
+            f"Command:     {latest['command']}",
+            f"Directory:   {latest['directory']}",
+            f"Executed:    {dt} ({format_relative_time(latest['timestamp'])})",
+            f"Status:      {status_text}",
+            f"Duration:    {latest['duration']:.2f} seconds",
+            f"Session ID:  {latest['session_id'] or 'n/a'}",
+            "",
+            "Press [Enter] to paste into shell, [Esc] to exit."
+        ]
+
+    # Switch stdin to /dev/tty if redirected
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except Exception:
+        pass
+
+    picker = InteractivePicker(title="Persistent SQLite History (Atuin Mode)",
+                               items=items, preview_fn=preview_fn,
+                               placeholder="Search command history...")
+    if initial_query:
+        picker.query = initial_query
+
+    selected = picker.run()
+    if selected is not None:
+        print(selected)
+        sys.exit(0)
+    sys.exit(1)
+
+def main():
+    parser = argparse.ArgumentParser(description="thist: SQLite persistent command history manager")
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    # record
+    p_rec = subparsers.add_parser("record", help="Record a command execution")
+    p_rec.add_argument("command", help="Executed command string")
+    p_rec.add_argument("directory", help="Working directory")
+    p_rec.add_argument("exit_code", type=int, default=0, help="Exit code of process")
+    p_rec.add_argument("duration", type=float, default=0.0, help="Duration in seconds")
+    p_rec.add_argument("session_id", nargs="?", default="", help="Terminal session ID")
+
+    # tui
+    p_tui = subparsers.add_parser("tui", help="Launch interactive history search TUI")
+    p_tui.add_argument("query", nargs="?", default="", help="Initial search filter")
+
+    # stats
+    subparsers.add_parser("stats", help="Display history telemetry and top commands")
+
+    args = parser.parse_args()
+
+    if args.subcommand == "record":
+        record_command(
+            command=args.command,
+            directory=args.directory,
+            timestamp=time.time(),
+            exit_code=args.exit_code,
+            duration=args.duration,
+            session_id=args.session_id
+        )
+    elif args.subcommand == "stats":
+        stats = get_history_stats()
+        print(f"Total commands executed: {stats['total_commands']}")
+        print(f"Unique commands:         {stats['unique_commands']}")
+        print("\nTop 10 most frequent commands:")
+        for cmd, cnt in stats["top_commands"]:
+            print(f"  {str(cnt).rjust(5)}  {cmd}")
+    else:
+        # Default to TUI
+        q = getattr(args, "query", "")
+        run_tui(q)
+
+if __name__ == "__main__":
+    main()

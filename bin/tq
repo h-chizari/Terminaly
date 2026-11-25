@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""tq: Pure-Python structured data query engine for JSON, CSV, and SQLite (Nushell equivalent)."""
+
+import argparse
+import csv
+import json
+import os
+import sqlite3
+import sys
+from typing import List, Dict, Any, Tuple
+
+# ANSI styling
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+def load_data_from_source(source_text: str, file_path: str = "") -> List[Dict[str, Any]]:
+    # 1. Try JSON
+    try:
+        parsed = json.loads(source_text)
+        if isinstance(parsed, list):
+            return [x for x in parsed if isinstance(x, dict)]
+        elif isinstance(parsed, dict):
+            return [parsed]
+    except Exception:
+        pass
+
+    # 2. Try CSV / TSV
+    try:
+        delimiter = "\t" if "\t" in source_text.splitlines()[0] else ","
+        reader = csv.DictReader(source_text.splitlines(), delimiter=delimiter)
+        rows = [dict(r) for r in reader]
+        if rows:
+            return rows
+    except Exception:
+        pass
+
+    raise ValueError("Could not parse data as JSON or CSV/TSV.")
+
+def render_table(headers: List[str], rows: List[List[Any]]) -> None:
+    if not headers:
+        print("(Empty result set)")
+        return
+
+    # Calculate column widths
+    col_widths = [len(h) for h in headers]
+    for r in rows:
+        for idx, val in enumerate(r):
+            s_val = str(val) if val is not None else ""
+            if idx < len(col_widths):
+                col_widths[idx] = max(col_widths[idx], len(s_val))
+
+    # Build border lines
+    top_line = "┌─" + "─┬─".join("─" * w for w in col_widths) + "─┐"
+    mid_line = "├─" + "─┼─".join("─" * w for w in col_widths) + "─┤"
+    bot_line = "└─" + "─┴─".join("─" * w for w in col_widths) + "─┘"
+
+    print(top_line)
+    header_row = "│ " + " │ ".join(f"{BOLD}{CYAN}{h.ljust(w)}{RESET}" for h, w in zip(headers, col_widths)) + " │"
+    print(header_row)
+    print(mid_line)
+
+    for row in rows:
+        formatted_cells = []
+        for idx, val in enumerate(row):
+            w = col_widths[idx]
+            s_val = str(val) if val is not None else f"{DIM}null{RESET}"
+            formatted_cells.append(s_val.ljust(w))
+        print("│ " + " │ ".join(formatted_cells) + " │")
+
+    print(bot_line)
+    print(f"{DIM}Total rows: {len(rows)}{RESET}")
+
+def main():
+    parser = argparse.ArgumentParser(description="tq: Query JSON, CSV, and tabular data using SQL")
+    parser.add_argument("query", nargs="?", default="SELECT * FROM data LIMIT 25", help="SQL query to execute")
+    parser.add_argument("-f", "--file", help="Path to input file (defaults to stdin)")
+    parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument("--csv", action="store_true", help="Output results as CSV")
+    args = parser.parse_args()
+
+    # Read input text
+    if args.file:
+        if not os.path.exists(args.file):
+            print(f"Error: File '{args.file}' not found.", file=sys.stderr)
+            sys.exit(1)
+        with open(args.file, "r", encoding="utf-8", errors="replace") as f:
+            raw_data = f.read()
+    else:
+        if sys.stdin.isatty():
+            print("Usage: cat file.json | tq [query] OR tq -f file.csv [query]", file=sys.stderr)
+            sys.exit(1)
+        raw_data = sys.stdin.read()
+
+    if not raw_data.strip():
+        print("Error: Empty input data.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        rows = load_data_from_source(raw_data)
+    except Exception as e:
+        print(f"Error parsing data: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not rows:
+        print("No records found in data.", file=sys.stderr)
+        return
+
+    # Ingest into SQLite in-memory
+    conn = sqlite3.connect(":memory:")
+    # Collect all unique columns across all dictionaries
+    all_keys = list(dict.fromkeys(k for r in rows for k in r.keys()))
+    safe_cols = [f'"{k}" TEXT' for k in all_keys]
+
+    conn.execute(f"CREATE TABLE data ({', '.join(safe_cols)});")
+    insert_sql = f"INSERT INTO data ({', '.join(f'\"{k}\"' for k in all_keys)}) VALUES ({', '.join('?' for _ in all_keys)});"
+    
+    insert_tuples = []
+    for r in rows:
+        insert_tuples.append(tuple(r.get(k) for k in all_keys))
+    conn.executemany(insert_sql, insert_tuples)
+
+    # Execute user query
+    try:
+        cursor = conn.cursor()
+        cursor.execute(args.query)
+        res_rows = cursor.fetchall()
+        headers = [d[0] for d in cursor.description] if cursor.description else []
+    except Exception as e:
+        print(f"SQL Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        out_list = [dict(zip(headers, r)) for r in res_rows]
+        print(json.dumps(out_list, indent=2))
+    elif args.csv:
+        writer = csv.writer(sys.stdout)
+        writer.writerow(headers)
+        writer.writerows(res_rows)
+    else:
+        render_table(headers, res_rows)
+
+if __name__ == "__main__":
+    main()

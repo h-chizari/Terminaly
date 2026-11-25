@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""tls: High-speed modern tree and directory listing utility (eza equivalent)."""
+
+import argparse
+import os
+import stat
+import sys
+import time
+from pathlib import Path
+from typing import Dict, Optional
+
+# ANSI Colors
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+BLUE = "\033[34m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+MAGENTA = "\033[35m"
+WHITE = "\033[37m"
+
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes}B".rjust(6)
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f}K".rjust(6)
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f}M".rjust(6)
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.1f}G".rjust(6)
+
+def format_perms(mode: int) -> str:
+    is_dir = "d" if stat.S_ISDIR(mode) else "-"
+    perms = [
+        "r" if mode & stat.S_IRUSR else "-",
+        "w" if mode & stat.S_IWUSR else "-",
+        "x" if mode & stat.S_IXUSR else "-",
+        "r" if mode & stat.S_IRGRP else "-",
+        "w" if mode & stat.S_IWGRP else "-",
+        "x" if mode & stat.S_IXGRP else "-",
+        "r" if mode & stat.S_IROTH else "-",
+        "w" if mode & stat.S_IWOTH else "-",
+        "x" if mode & stat.S_IXOTH else "-",
+    ]
+    return f"{DIM}{is_dir}{''.join(perms)}{RESET}"
+
+def get_file_color(path: Path, st_mode: int) -> str:
+    if stat.S_ISDIR(st_mode):
+        return f"{BOLD}{CYAN}"
+    elif stat.S_ISLNK(st_mode):
+        return f"{MAGENTA}"
+    elif st_mode & stat.S_IXUSR:
+        return f"{BOLD}{GREEN}"
+    ext = path.suffix.lower()
+    if ext in (".py", ".sh", ".zsh", ".bash", ".js", ".ts", ".go", ".rs", ".c", ".cpp", ".swift"):
+        return f"{YELLOW}"
+    elif ext in (".zip", ".tar", ".gz", ".7z", ".pkg", ".dmg"):
+        return f"{RED}"
+    elif ext in (".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".sql"):
+        return f"{WHITE}"
+    return f"{RESET}"
+
+def get_git_status_map(target_dir: str) -> Dict[str, str]:
+    status_map = {}
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["git", "-C", target_dir, "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
+        )
+        for line in out.splitlines():
+            if len(line) >= 4:
+                st = line[:2].strip()
+                file_rel = line[3:].strip()
+                status_map[file_rel] = st
+    except Exception:
+        pass
+    return status_map
+
+def print_long_listing(paths, git_map):
+    for p in paths:
+        try:
+            st = p.lstat()
+            perms = format_perms(st.st_mode)
+            sz = format_size(st.st_size)
+            mtime = time.strftime("%b %d %H:%M", time.localtime(st.st_mtime))
+            color = get_file_color(p, st.st_mode)
+            
+            # Git status flag
+            rel = os.path.relpath(str(p), ".")
+            gst = git_map.get(rel, "")
+            gst_badge = f"{YELLOW}[{gst}]{RESET} " if gst else "    "
+            
+            name = p.name
+            if p.is_dir():
+                name += "/"
+            elif p.is_symlink():
+                try:
+                    name += f" -> {os.readlink(p)}"
+                except Exception:
+                    pass
+            print(f"{perms}  {sz}  {DIM}{mtime}{RESET}  {gst_badge}{color}{name}{RESET}")
+        except Exception as e:
+            print(f"Error reading {p}: {e}")
+
+def print_tree(dir_path: Path, prefix: str = "", level: int = 0, max_depth: int = 3, show_hidden: bool = False):
+    if level >= max_depth:
+        return
+    try:
+        entries = sorted(list(dir_path.iterdir()), key=lambda x: (not x.is_dir(), x.name.lower()))
+    except Exception:
+        return
+
+    if not show_hidden:
+        entries = [e for e in entries if not e.name.startswith(".")]
+
+    total = len(entries)
+    for idx, e in enumerate(entries):
+        is_last = (idx == total - 1)
+        connector = "└── " if is_last else "├── "
+        child_prefix = "    " if is_last else "│   "
+        
+        try:
+            st = e.lstat()
+            color = get_file_color(e, st.st_mode)
+            name = e.name + ("/" if e.is_dir() else "")
+            sz = f" {DIM}({format_size(st.st_size).strip()}){RESET}" if not e.is_dir() else ""
+            print(f"{prefix}{connector}{color}{name}{RESET}{sz}")
+            
+            if e.is_dir() and not e.is_symlink():
+                print_tree(e, prefix + child_prefix, level + 1, max_depth, show_hidden)
+        except Exception:
+            pass
+
+def main():
+    parser = argparse.ArgumentParser(description="tls: Modern directory and tree listing")
+    parser.add_argument("path", nargs="?", default=".", help="Target directory or file")
+    parser.add_argument("-l", "--long", action="store_true", help="Detailed long listing")
+    parser.add_argument("-t", "--tree", action="store_true", help="Display tree structure")
+    parser.add_argument("-a", "--all", action="store_true", help="Include hidden entries")
+    parser.add_argument("-d", "--depth", type=int, default=3, help="Max depth for tree view")
+    args = parser.parse_args()
+
+    target = Path(args.path).resolve()
+    if not target.exists():
+        print(f"{RED}Error: Path '{args.path}' does not exist.{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    if target.is_file():
+        git_map = get_git_status_map(str(target.parent))
+        print_long_listing([target], git_map)
+        return
+
+    if args.tree:
+        print(f"{BOLD}{CYAN}{target.name}/{RESET}")
+        print_tree(target, max_depth=args.depth, show_hidden=args.all)
+        return
+
+    try:
+        entries = sorted(list(target.iterdir()), key=lambda x: (not x.is_dir(), x.name.lower()))
+        if not args.all:
+            entries = [e for e in entries if not e.name.startswith(".")]
+            
+        git_map = get_git_status_map(str(target))
+        if args.long:
+            print_long_listing(entries, git_map)
+        else:
+            # Multi-column or compact line view
+            for e in entries:
+                st = e.lstat()
+                color = get_file_color(e, st.st_mode)
+                name = e.name + ("/" if e.is_dir() else "")
+                print(f"{color}{name}{RESET}")
+    except Exception as e:
+        print(f"{RED}Error: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

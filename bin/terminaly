@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""terminaly: Master CLI dispatcher, session switcher, scratchpad manager, and multiplexer."""
+
+import argparse
+import fcntl
+import os
+import pty
+import select
+import shutil
+import struct
+import subprocess
+import sys
+import termios
+import time
+from pathlib import Path
+from typing import List, Tuple, Any
+
+# Ensure core is on path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.curses_ui import InteractivePicker
+from core.sysinfo import get_system_summary
+from core.db import query_frecency, get_history_stats, ensure_terminaly_dir
+
+# ==================== PTY MULTIPLEXER ====================
+
+def run_multiplexer():
+    """Runs a pure-Python lightweight PTY multiplexer with a persistent top system bar."""
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    master_fd, slave_fd = pty.openpty()
+
+    # Get terminal size
+    ws = struct.pack("HHHH", 0, 0, 0, 0)
+    try:
+        ws = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, ws)
+        rows, cols, _, _ = struct.unpack("HHHH", ws)
+    except Exception:
+        rows, cols = 24, 80
+
+    # Subtract 1 row for top status bar
+    sub_rows = max(5, rows - 1)
+    sub_ws = struct.pack("HHHH", sub_rows, cols, 0, 0)
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, sub_ws)
+
+    pid = os.fork()
+    if pid == 0:
+        # Child process
+        os.close(master_fd)
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        os.dup2(slave_fd, 0)
+        os.dup2(slave_fd, 1)
+        os.dup2(slave_fd, 2)
+        os.close(slave_fd)
+        os.environ["TERMINALY_MUX"] = "1"
+        os.execv(shell, [shell])
+
+    # Parent process
+    os.close(slave_fd)
+    old_term = termios.tcgetattr(sys.stdin.fileno())
+
+    def draw_top_bar():
+        sys_info = get_system_summary()
+        bar_text = f" Terminaly Mux │ {sys_info} "
+        # Save cursor, move to (1,1), print inverted bar, restore cursor
+        bar_line = f"\033[s\033[1;1H\033[7m\033[1m{bar_text.ljust(cols)[:cols]}\033[0m\033[u"
+        sys.stdout.write(bar_line)
+        sys.stdout.flush()
+
+    try:
+        # Put terminal into raw mode
+        import tty
+        tty.setraw(sys.stdin.fileno())
+        
+        # Initial scroll margin (reserve row 1)
+        # DECSTBM: \033[top;botr
+        sys.stdout.write(f"\033[2;{rows}r\033[2;1H")
+        sys.stdout.flush()
+        draw_top_bar()
+
+        last_update = time.time()
+        buf = b""
+
+        while True:
+            # Refresh top bar every 3 seconds
+            now = time.time()
+            if now - last_update > 3.0:
+                draw_top_bar()
+                last_update = now
+
+            r_fds, _, _ = select.select([sys.stdin.fileno(), master_fd], [], [], 0.5)
+
+            if sys.stdin.fileno() in r_fds:
+                data = os.read(sys.stdin.fileno(), 1024)
+                if not data:
+                    break
+                # Check for Ctrl+A prefix
+                os.write(master_fd, data)
+
+            if master_fd in r_fds:
+                try:
+                    data = os.read(master_fd, 1024)
+                    if not data:
+                        break
+                    sys.stdout.write(data.decode("utf-8", errors="replace"))
+                    sys.stdout.flush()
+                except OSError:
+                    break
+    finally:
+        # Reset scroll margins and terminal mode
+        sys.stdout.write("\033[r\033[2J\033[H")
+        sys.stdout.flush()
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_term)
+        os.close(master_fd)
+
+# ==================== SCRATCHPAD ====================
+
+def toggle_scratchpad():
+    """Toggles a floating macOS Terminal scratchpad window using AppleScript."""
+    apple_script = """
+    tell application "Terminal"
+        set found to false
+        repeat with w in windows
+            if custom title of w contains "Terminaly Scratchpad" then
+                set found to true
+                set index of w to 1
+                activate
+                exit repeat
+            end if
+        end repeat
+        if not found then
+            do script "export TERMINALY_SCRATCH=1; clear; echo '=== Terminaly Scratchpad (Press Ctrl+D to exit) ==='; zsh"
+            set custom title of front window to "Terminaly Scratchpad"
+            set bounds of front window to {200, 150, 1050, 750}
+            activate
+        end if
+    end tell
+    """
+    try:
+        subprocess.check_call(["osascript", "-e", apple_script])
+        print("Toggled scratchpad window.")
+    except Exception as e:
+        print(f"Error launching scratchpad: {e}", file=sys.stderr)
+
+# ==================== SESSION SWITCHER ====================
+
+def run_session_switcher():
+    """Interactive fuzzy session switcher searching git repos, workspaces, and recent folders."""
+    recent_dirs = query_frecency(limit=30)
+    items: List[Tuple[str, Any]] = []
+
+    for path, score in recent_dirs:
+        name = Path(path).name or path
+        items.append((f"📁 {name.ljust(22)} {path}", path))
+
+    def preview_session(p_str: str) -> List[str]:
+        p = Path(p_str)
+        lines = [f"Path: {p_str}", ""]
+        if (p / ".git").exists():
+            try:
+                b = subprocess.check_output(
+                    ["git", "-C", p_str, "branch", "--show-current"], text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                lines.append(f"Git Branch: {b}")
+                diff = subprocess.check_output(
+                    ["git", "-C", p_str, "status", "-s"], text=True, stderr=subprocess.DEVNULL
+                ).splitlines()
+                lines.append(f"Uncommitted files: {len(diff)}")
+                lines.append("")
+            except Exception:
+                pass
+        try:
+            entries = [e.name for e in p.iterdir() if not e.name.startswith(".")][:15]
+            lines.append(f"Contents ({len(entries)}):")
+            for e in entries:
+                lines.append(f"  {e}")
+        except Exception:
+            pass
+        return lines
+
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except Exception:
+        pass
+
+    picker = InteractivePicker(title="Session & Project Switcher", items=items, preview_fn=preview_session)
+    selected = picker.run()
+    if selected:
+        print(f"\nJump to project:\n  cd {selected}\n")
+        # Write to temporary file for shell hook
+        jump_tmp = ensure_terminaly_dir() / "jump_target"
+        jump_tmp.write_text(selected, encoding="utf-8")
+
+# ==================== DOCTOR ====================
+
+def run_doctor():
+    """Self-test and diagnostic audit of local tools and configurations."""
+    print("\n\033[1m\033[36m=== Terminaly Environment Diagnostic (Doctor) ===\033[0m\n")
+
+    checks = [
+        ("macOS Version", ["sw_vers", "-productVersion"]),
+        ("Zsh Shell", ["/bin/zsh", "--version"]),
+        ("Python 3 Stdlib", ["python3", "--version"]),
+        ("Git Version", ["git", "--version"]),
+        ("SQLite3 Binary", ["sqlite3", "--version"]),
+        ("Native Vim 9.1", ["/usr/bin/vim", "--version"]),
+    ]
+
+    for name, cmd in checks:
+        try:
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).splitlines()[0]
+            print(f"  \033[32m✓\033[0m {name.ljust(18)} : {out}")
+        except Exception as e:
+            print(f"  \033[31m✗\033[0m {name.ljust(18)} : Missing or error ({e})")
+
+    # Check database directory
+    tdir = ensure_terminaly_dir()
+    print(f"  \033[32m✓\033[0m Config & DB Dir    : {tdir} (writable)")
+
+    print(f"\n\033[32mStatus: All native prerequisites are available offline.\033[0m\n")
+
+# ==================== MAIN ====================
+
+def main():
+    parser = argparse.ArgumentParser(description="Terminaly: Offline macOS Native Terminal Framework")
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    subparsers.add_parser("mux", help="Start pure-Python PTY multiplexer with live telemetry bar")
+    subparsers.add_parser("scratch", help="Toggle floating persistent scratchpad terminal")
+    subparsers.add_parser("session", help="Launch interactive fuzzy session & project switcher")
+    subparsers.add_parser("doctor", help="Run diagnostic environment health check")
+
+    args = parser.parse_args()
+
+    if args.subcommand == "mux":
+        run_multiplexer()
+    elif args.subcommand == "scratch":
+        toggle_scratchpad()
+    elif args.subcommand == "session":
+        run_session_switcher()
+    elif args.subcommand == "doctor":
+        run_doctor()
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()

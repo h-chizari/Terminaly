@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""tai: Terminal-Native AI Coding Agent Harness & Antigravity Bridge."""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import List
+
+STE100_RULES_PATH = Path(__file__).resolve().parent.parent / "templates" / "ste100_rules.md"
+BRAIN_DIR = Path.home() / ".gemini" / "antigravity" / "brain"
+
+def get_ste100_instructions() -> str:
+    if STE100_RULES_PATH.exists():
+        return STE100_RULES_PATH.read_text(encoding="utf-8")
+    return ""
+
+def list_sessions():
+    if not BRAIN_DIR.exists():
+        print("No Antigravity sessions directory found.")
+        return
+
+    sessions = []
+    try:
+        for d in sorted(BRAIN_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if d.is_dir() and not d.name.startswith("."):
+                mtime = d.stat().st_mtime
+                # Check for transcripts
+                has_transcript = (d / ".system_generated" / "logs" / "transcript.jsonl").exists()
+                sessions.append((d.name, mtime, has_transcript))
+    except (PermissionError, OSError) as e:
+        print(f"Note: Could not inspect Antigravity brain sessions ({e}). Running in isolated environment.")
+        return
+
+    print("\nRecent Antigravity AI Sessions:")
+    print("─" * 60)
+    for sid, mtime, has_tr in sessions[:15]:
+        time_str = sys.modules["time"].strftime("%Y-%m-%d %H:%M", sys.modules["time"].localtime(mtime))
+        status = "✓ has transcript" if has_tr else "active"
+        print(f"  {sid[:16]}... │ {time_str} │ {status}")
+    print()
+
+def export_session(session_id: str, out_file: str):
+    sess_dir = BRAIN_DIR / session_id
+    if not sess_dir.exists():
+        # Match prefix
+        matches = [d for d in BRAIN_DIR.iterdir() if d.name.startswith(session_id)]
+        if matches:
+            sess_dir = matches[0]
+        else:
+            print(f"Error: Session '{session_id}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+    transcript_path = sess_dir / ".system_generated" / "logs" / "transcript.jsonl"
+    if not transcript_path.exists():
+        print(f"Error: Transcript file not found in {sess_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    out_lines = [f"# Antigravity Session Export: {sess_dir.name}\n\n"]
+    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                data = json.loads(line)
+                role = data.get("source", "UNKNOWN")
+                content = data.get("content", "")
+                created = data.get("created_at", "")
+                if content:
+                    out_lines.append(f"### [{role}] {created}\n\n{content}\n\n---\n")
+            except Exception:
+                pass
+
+    out_path = Path(out_file)
+    out_path.write_text("".join(out_lines), encoding="utf-8")
+    print(f"Exported session transcript to {out_path.resolve()}")
+
+def dispatch_prompt(prompt: str, files: List[str] = None):
+    # Find agy executable
+    agy_bin = shutil.which("agy")
+    if not agy_bin:
+        # Check standard antigravity locations
+        potential_paths = [
+            Path.home() / ".gemini" / "antigravity" / "bin" / "agentapi",
+            Path("/Applications/Antigravity.app/Contents/Resources/bin/language_server"),
+        ]
+        for p in potential_paths:
+            if p.exists():
+                agy_bin = str(p)
+                break
+
+    ste_prompt = f"[ASD-STE100 Rules Applied]\n{prompt}"
+    if files:
+        for fpath in files:
+            p = Path(fpath)
+            if p.exists():
+                content = p.read_text(encoding="utf-8", errors="replace")
+                ste_prompt += f"\n\n--- File: {fpath} ---\n{content}\n"
+
+    print(f"\033[1m\033[36m[tai]\033[0m Routing prompt with ASD-STE100 rules:")
+    print("─" * 60)
+    print(prompt)
+    print("─" * 60)
+
+    if agy_bin and "agy" in agy_bin:
+        try:
+            subprocess.run([agy_bin, prompt])
+            return
+        except Exception as e:
+            print(f"Note: Error invoking agy CLI: {e}")
+
+    print("\033[32mPrompt optimized for Antigravity.\033[0m")
+    print("You can paste this prompt directly into Antigravity or copy to clipboard:")
+    print("\n" + ste_prompt + "\n")
+
+def main():
+    parser = argparse.ArgumentParser(description="tai: Terminal-Native AI Coding Agent Bridge")
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    p_sessions = subparsers.add_parser("sessions", help="List recent Antigravity sessions")
+    
+    p_exp = subparsers.add_parser("export", help="Export session transcript to Markdown")
+    p_exp.add_argument("session_id", help="Session ID to export")
+    p_exp.add_argument("-o", "--out", default="session_export.md", help="Output markdown path")
+
+    p_ask = subparsers.add_parser("ask", help="Send prompt to AI agent")
+    p_ask.add_argument("prompt", help="Natural language prompt")
+    p_ask.add_argument("-f", "--file", action="append", help="Attach file context")
+
+    args = parser.parse_args()
+
+    if args.subcommand == "sessions":
+        list_sessions()
+    elif args.subcommand == "export":
+        export_session(args.session_id, args.out)
+    elif args.subcommand == "ask":
+        dispatch_prompt(args.prompt, args.file)
+    else:
+        # Check if stdin is piped
+        if not sys.stdin.isatty():
+            piped_text = sys.stdin.read()
+            dispatch_prompt(piped_text)
+        else:
+            parser.print_help()
+
+if __name__ == "__main__":
+    main()

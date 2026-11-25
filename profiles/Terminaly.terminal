@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ProfileCurrentVersion</key>
+	<real>2.0699999999999998</real>
+	<key>name</key>
+	<string>Terminaly</string>
+	<key>type</key>
+	<string>Window Settings</string>
+	<key>useOptionAsMetaKey</key>
+	<true/>
+	<key>FontAntialiasing</key>
+	<true/>
+	<key>FontWidthSpacing</key>
+	<real>1</real>
+	<key>ShowActiveProcessInTitle</key>
+	<true/>
+	<key>ShowDimensionsInTitle</key>
+	<false/>
+	<key>ShowCommandKeyInTitle</key>
+	<false/>
+	<key>VisualBell</key>
+	<true/>
+	<key>CursorType</key>
+	<integer>1</integer>
+	<key>CursorBlink</key>
+	<true/>
+	<key>ColumnCount</key>
+	<integer>120</integer>
+	<key>RowCount</key>
+	<integer>34</integer>
+	<key>BackgroundColor</key>
+	<data>YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGjCwwTVSRudWxs0w0ODxAREldOU1doaXRlXE5TQ29sb3JTcGFjZVYkY2xhc3MwIDAuOTUAAYAC0hMUFRZaJGNsYXNzbmFtZVgkY2xhc3Nlc1dOU0NvbG9yohUWV05TT2JqZWN0CBEaJCkyN0lMUVNYXGBkaW5xcX1+h4mRlQAAAAAAAAEBAAAAAAAAABcAAAAAAAAAAAAAAAAAAACX</data>
+	<key>TextBoldColor</key>
+	<data>YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGjCwwTVSRudWxs0w0ODxAREldOU1doaXRlXE5TQ29sb3JTcGFjZVYkY2xhc3MxIDGAAIAE0hMUFRZaJGNsYXNzbmFtZVgkY2xhc3Nlc1dOU0NvbG9yohUWV05TT2JqZWN0CBEaJCkyN0lMUVNYXGBkaW5xcX1+h4mRlQAAAAAAAAEBAAAAAAAAABcAAAAAAAAAAAAAAAAAAACX</data>
+</dict>
+</plist>

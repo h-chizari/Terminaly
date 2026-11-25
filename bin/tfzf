@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""tfzf: Pure-Python high-speed universal fuzzy finder and channel browser."""
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Tuple, Any
+
+# Ensure core is in path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.curses_ui import InteractivePicker
+from core.db import search_history
+
+def file_preview(path_str: str) -> List[str]:
+    path = Path(path_str)
+    if not path.exists():
+        return [f"File not found: {path_str}"]
+    if path.is_dir():
+        try:
+            entries = list(path.iterdir())[:20]
+            lines = [f"Directory: {path.name} ({len(entries)} items)", ""]
+            for e in entries:
+                icon = "📁" if e.is_dir() else "📄"
+                lines.append(f"{icon} {e.name}")
+            return lines
+        except Exception as e:
+            return [f"Permission denied: {e}"]
+    try:
+        lines = []
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for idx, line in enumerate(f):
+                if idx >= 50:
+                    lines.append("... [preview truncated]")
+                    break
+                lines.append(f"{idx+1:3d} │ {line.rstrip()}")
+        return lines or ["(Empty file)"]
+    except Exception as e:
+        return [f"Binary or unreadable file: {e}"]
+
+def get_channel_items(channel: str) -> Tuple[str, List[Tuple[str, Any]], Any]:
+    if channel == "files":
+        items = []
+        for root, dirs, files in os.walk(".", topdown=True):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+            for f in files:
+                if not f.startswith("."):
+                    rel = os.path.relpath(os.path.join(root, f), ".")
+                    items.append((rel, rel))
+        return "File Browser", items, file_preview
+
+    elif channel == "dirs":
+        items = []
+        for root, dirs, _ in os.walk(".", topdown=True):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+            for d in dirs:
+                rel = os.path.relpath(os.path.join(root, d), ".")
+                items.append((f"📁 {rel}", rel))
+        return "Directory Browser", items, file_preview
+
+    elif channel == "git":
+        items = []
+        try:
+            commits = subprocess.check_output(
+                ["git", "log", "--oneline", "-n", "100"], text=True, stderr=subprocess.DEVNULL
+            ).splitlines()
+            for c in commits:
+                parts = c.split(" ", 1)
+                h = parts[0]
+                msg = parts[1] if len(parts) > 1 else ""
+                items.append((f"{h} {msg}", h))
+        except Exception:
+            pass
+
+        def git_preview(commit_hash: str) -> List[str]:
+            try:
+                out = subprocess.check_output(
+                    ["git", "show", "--stat", "--patch", commit_hash], text=True, stderr=subprocess.DEVNULL
+                )
+                return out.splitlines()[:60]
+            except Exception as e:
+                return [str(e)]
+
+        return "Git Commit Browser", items, git_preview
+
+    elif channel == "proc":
+        items = []
+        try:
+            out = subprocess.check_output(["ps", "-A", "-o", "pid,user,%cpu,%mem,comm"], text=True).splitlines()
+            for line in out[1:]:
+                parts = line.strip().split(None, 4)
+                if len(parts) >= 5:
+                    pid, user, cpu, mem, cmd = parts
+                    items.append((f"{pid.rjust(6)} | {cpu}% CPU | {cmd}", pid))
+        except Exception:
+            pass
+
+        def proc_preview(pid: str) -> List[str]:
+            try:
+                out = subprocess.check_output(["ps", "-p", pid, "-u"], text=True)
+                return out.splitlines()
+            except Exception as e:
+                return [f"Process {pid} no longer running: {e}"]
+
+        return "Process Browser", items, proc_preview
+
+    elif channel == "history":
+        rows = search_history(limit=100)
+        items = [(r["command"], r["command"]) for r in rows]
+        return "History Search", items, None
+
+    elif channel == "env":
+        items = [(f"{k}={v}", k) for k, v in os.environ.items()]
+        return "Environment Variables", items, lambda k: [f"Key: {k}", f"Value:\n{os.environ.get(k, '')}"]
+
+    return "Items", [], None
+
+def main():
+    parser = argparse.ArgumentParser(description="Terminaly Universal Fuzzy Finder & Channel Browser")
+    parser.add_argument("--channel", choices=["files", "dirs", "git", "proc", "history", "env"],
+                        help="Structured channel to browse")
+    parser.add_argument("--filter", default="", help="Initial search filter")
+    parser.add_argument("--title", default="Universal Fuzzy Search", help="Picker header title")
+    args = parser.parse_args()
+
+    preview_fn = None
+    if args.channel:
+        title, items, preview_fn = get_channel_items(args.channel)
+    elif not sys.stdin.isatty():
+        # Read from piped stdin
+        raw_lines = [line.rstrip("\r\n") for line in sys.stdin]
+        items = [(line, line) for line in raw_lines if line.strip()]
+        title = args.title
+    else:
+        # Default to files channel
+        title, items, preview_fn = get_channel_items("files")
+
+    if not items:
+        sys.exit(1)
+
+    # Reopen stdin from /dev/tty for curses terminal interaction
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except Exception:
+        pass
+
+    picker = InteractivePicker(title=title, items=items, preview_fn=preview_fn)
+    if args.filter:
+        picker.query = args.filter
+
+    result = picker.run()
+    if result is not None:
+        print(result)
+        sys.exit(0)
+    sys.exit(1)
+
+if __name__ == "__main__":
+    main()

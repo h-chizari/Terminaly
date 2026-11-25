@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""tboard: Parallel AI Agent & Worktree Curses Dashboard (Workmux equivalent)."""
+
+import curses
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import List, Dict, Any
+
+# Ensure core is on path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.curses_ui import TerminalColors, safe_addstr, draw_box
+from core.sysinfo import get_system_summary, get_git_info
+
+def get_worktree_data() -> List[Dict[str, str]]:
+    trees = []
+    try:
+        out = subprocess.check_output(["git", "worktree", "list", "--porcelain"], text=True, stderr=subprocess.DEVNULL)
+        current_entry = {}
+        for line in out.splitlines():
+            if line.startswith("worktree "):
+                if current_entry:
+                    trees.append(current_entry)
+                current_entry = {"path": line.split(" ", 1)[1].strip()}
+            elif line.startswith("HEAD "):
+                current_entry["head"] = line.split(" ", 1)[1].strip()[:7]
+            elif line.startswith("branch "):
+                current_entry["branch"] = line.split(" ", 1)[1].strip().replace("refs/heads/", "")
+        if current_entry:
+            trees.append(current_entry)
+    except Exception:
+        pass
+    return trees
+
+def get_git_diff_summary(target_dir: str) -> List[str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", target_dir, "diff", "--stat"], text=True, stderr=subprocess.DEVNULL
+        )
+        lines = out.splitlines()
+        if not lines:
+            status = subprocess.check_output(
+                ["git", "-C", target_dir, "status", "-s"], text=True, stderr=subprocess.DEVNULL
+            ).splitlines()
+            if not status:
+                return ["✓ Working tree clean. No pending diffs."]
+            return [f"Untracked / Staged files ({len(status)}):"] + [f"  {s}" for s in status[:15]]
+        return lines[:20]
+    except Exception as e:
+        return [f"Not a git repository: {e}"]
+
+def get_agent_activities() -> List[str]:
+    """Inspects running agy or Antigravity tasks and recent transcripts."""
+    activities = []
+    # 1. Check for running agy / python processes
+    try:
+        ps_out = subprocess.check_output(
+            ["ps", "-A", "-o", "pid,%cpu,comm,args"], text=True, stderr=subprocess.DEVNULL
+        )
+        for line in ps_out.splitlines():
+            if any(k in line for k in ("agy", "language_server agentapi", "terminaly")):
+                parts = line.strip().split(None, 3)
+                if len(parts) >= 4:
+                    pid, cpu, comm, full_cmd = parts
+                    cmd_short = Path(comm).name
+                    activities.append(f"PID {pid.rjust(6)} [{cpu}% CPU] {cmd_short}: {full_cmd[:40]}")
+    except Exception:
+        pass
+
+    # 2. Check for Antigravity conversation transcripts
+    try:
+        brain_dir = Path.home() / ".gemini" / "antigravity" / "brain"
+        if brain_dir.exists():
+            recent_dirs = sorted(brain_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:3]
+            for r in recent_dirs:
+                if r.is_dir():
+                    mtime = time.strftime("%H:%M:%S", time.localtime(r.stat().st_mtime))
+                    activities.append(f"Session {r.name[:8]}... (Last active: {mtime})")
+    except Exception:
+        pass
+
+    return activities or ["(No active AI agent tasks running)"]
+
+def run_dashboard(stdscr):
+    TerminalColors.init_colors()
+    curses.curs_set(0)
+    stdscr.timeout(1000)  # Refresh every 1 second
+
+    selected_tree_idx = 0
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+        if max_y < 15 or max_x < 70:
+            safe_addstr(stdscr, 0, 0, "Terminal window too small for dashboard!")
+            stdscr.refresh()
+            k = stdscr.getch()
+            if k in (ord('q'), 27):
+                break
+            continue
+
+        # Top System Status Bar
+        sys_summary = get_system_summary()
+        header_text = f" Terminaly Dashboard │ {sys_summary} "
+        safe_addstr(stdscr, 0, 0, header_text.ljust(max_x),
+                    curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE | curses.A_BOLD)
+
+        # Layout geometry: 3 panels
+        # Left Panel: Worktrees (35% width)
+        # Right Top: Git Diffs (65% width, 50% height)
+        # Right Bottom: AI Agents (65% width, 50% height)
+        left_w = int(max_x * 0.38)
+        right_w = max_x - left_w
+        content_h = max_y - 2
+        right_h1 = int(content_h * 0.55)
+        right_h2 = content_h - right_h1
+
+        # 1. Left Panel: Worktrees
+        draw_box(stdscr, 1, 0, content_h, left_w, title="Git Worktrees & Repos",
+                 attr=curses.color_pair(TerminalColors.PAIR_HEADER))
+        trees = get_worktree_data()
+        if not trees:
+            safe_addstr(stdscr, 3, 2, "No git worktrees found.", curses.color_pair(TerminalColors.PAIR_MUTED))
+            safe_addstr(stdscr, 4, 2, "Run 'twt add <branch>' to create one.")
+        else:
+            if selected_tree_idx >= len(trees):
+                selected_tree_idx = max(0, len(trees) - 1)
+            for i, t in enumerate(trees[:content_h - 4]):
+                branch = t.get("branch", "(detached)")
+                head = t.get("head", "")
+                y = 3 + i
+                attr = curses.color_pair(TerminalColors.PAIR_HIGHLIGHT) if i == selected_tree_idx else curses.color_pair(TerminalColors.PAIR_DEFAULT)
+                prefix = "❯ " if i == selected_tree_idx else "  "
+                safe_addstr(stdscr, y, 1, f"{prefix}{branch.ljust(18)} [{head}]"[:left_w - 2], attr)
+
+        # 2. Right Top: Git Diffs
+        active_path = trees[selected_tree_idx]["path"] if trees else "."
+        draw_box(stdscr, 1, left_w, right_h1, right_w,
+                 title=f"Git Diff [{Path(active_path).name}]",
+                 attr=curses.color_pair(TerminalColors.PAIR_DEFAULT))
+        diff_lines = get_git_diff_summary(active_path)
+        for i, d in enumerate(diff_lines[:right_h1 - 2]):
+            attr = curses.color_pair(TerminalColors.PAIR_SUCCESS) if d.startswith("+") else curses.color_pair(TerminalColors.PAIR_DEFAULT)
+            safe_addstr(stdscr, 2 + i, left_w + 2, d[:right_w - 4], attr)
+
+        # 3. Right Bottom: AI Agent Activity
+        draw_box(stdscr, 1 + right_h1, left_w, right_h2, right_w,
+                 title="Antigravity AI Agents & Tasks",
+                 attr=curses.color_pair(TerminalColors.PAIR_ACCENT))
+        agent_lines = get_agent_activities()
+        for i, a in enumerate(agent_lines[:right_h2 - 2]):
+            safe_addstr(stdscr, 2 + right_h1 + i, left_w + 2, a[:right_w - 4],
+                        curses.color_pair(TerminalColors.PAIR_DEFAULT))
+
+        # Bottom Bar Hotkeys
+        footer = " [↑/↓] Select Worktree  [r] Refresh  [q] Quit "
+        safe_addstr(stdscr, max_y - 1, 0, footer.ljust(max_x),
+                    curses.color_pair(TerminalColors.PAIR_HEADER) | curses.A_REVERSE)
+
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (ord('q'), 27):
+            break
+        elif key in (curses.KEY_UP, ord('k')):
+            if selected_tree_idx > 0:
+                selected_tree_idx -= 1
+        elif key in (curses.KEY_DOWN, ord('j')):
+            if trees and selected_tree_idx < len(trees) - 1:
+                selected_tree_idx += 1
+        elif key == ord('r'):
+            continue
+
+def main():
+    try:
+        curses.wrapper(run_dashboard)
+    except KeyboardInterrupt:
+        pass
+
+if __name__ == "__main__":
+    main()
