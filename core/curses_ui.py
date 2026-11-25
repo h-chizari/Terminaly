@@ -6,6 +6,8 @@ import os
 import sys
 from typing import List, Tuple, Optional, Callable, Dict, Any
 
+from core.theme import apply_curses_theme
+
 class TerminalColors:
     PAIR_DEFAULT = 1
     PAIR_HEADER = 2
@@ -18,16 +20,7 @@ class TerminalColors:
 
     @classmethod
     def init_colors(cls):
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(cls.PAIR_DEFAULT, -1, -1)
-        curses.init_pair(cls.PAIR_HEADER, curses.COLOR_CYAN, -1)
-        curses.init_pair(cls.PAIR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(cls.PAIR_MUTED, curses.COLOR_WHITE, -1)
-        curses.init_pair(cls.PAIR_SUCCESS, curses.COLOR_GREEN, -1)
-        curses.init_pair(cls.PAIR_WARNING, curses.COLOR_YELLOW, -1)
-        curses.init_pair(cls.PAIR_DANGER, curses.COLOR_RED, -1)
-        curses.init_pair(cls.PAIR_ACCENT, curses.COLOR_MAGENTA, -1)
+        apply_curses_theme()
 
 def safe_addstr(win, y: int, x: int, text: str, attr: int = 0):
     max_y, max_x = win.getmaxyx()

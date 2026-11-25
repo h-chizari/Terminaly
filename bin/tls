@@ -9,17 +9,22 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-# ANSI Colors
+# Ensure core is in path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.theme import get_active_theme
+
+# Load active theme colors
+_theme = get_active_theme()["ansi"]
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
-BLUE = "\033[34m"
-CYAN = "\033[36m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-RED = "\033[31m"
-MAGENTA = "\033[35m"
-WHITE = "\033[37m"
+BLUE = _theme.get("primary", "\033[34m")
+CYAN = _theme.get("secondary", "\033[36m")
+GREEN = _theme.get("success", "\033[32m")
+YELLOW = _theme.get("warning", "\033[33m")
+RED = _theme.get("danger", "\033[31m")
+MAGENTA = _theme.get("accent", "\033[35m")
+MUTED = _theme.get("muted", "\033[38;5;242m")
 
 def format_size(size_bytes: int) -> str:
     if size_bytes < 1024:
@@ -59,7 +64,7 @@ def get_file_color(path: Path, st_mode: int) -> str:
     elif ext in (".zip", ".tar", ".gz", ".7z", ".pkg", ".dmg"):
         return f"{RED}"
     elif ext in (".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".sql"):
-        return f"{WHITE}"
+        return f"{CYAN}"
     return f"{RESET}"
 
 def get_git_status_map(target_dir: str) -> Dict[str, str]:

@@ -3,15 +3,65 @@
 
 setopt PROMPT_SUBST
 
-# Color definitions
-typeset -g _T_CYAN='%F{38}'
-typeset -g _T_MAGENTA='%F{135}'
-typeset -g _T_YELLOW='%F{220}'
-typeset -g _T_GREEN='%F{76}'
-typeset -g _T_RED='%F{196}'
-typeset -g _T_BLUE='%F{33}'
-typeset -g _T_GRAY='%F{242}'
-typeset -g _T_RESET='%f%b'
+# Load colors based on active Terminaly theme
+function _terminaly_load_prompt_colors() {
+    local theme_name="latte"
+    if [[ -f "$HOME/.terminaly/theme" ]]; then
+        theme_name=$(cat "$HOME/.terminaly/theme" 2>/dev/null | tr -d '[:space:]')
+    elif [[ -f "$TERMINALY_HOME/.terminaly_data/theme" ]]; then
+        theme_name=$(cat "$TERMINALY_HOME/.terminaly_data/theme" 2>/dev/null | tr -d '[:space:]')
+    fi
+
+    if [[ "$theme_name" == "latte" ]]; then
+        # Light mode high-contrast palette
+        _T_CYAN='%F{25}'        # Deep Sapphire Navy
+        _T_MAGENTA='%F{90}'     # Royal Plum
+        _T_YELLOW='%F{130}'     # Deep Rust / Amber
+        _T_GREEN='%F{28}'       # Forest Green
+        _T_RED='%F{160}'        # Crimson Red
+        _T_BLUE='%F{31}'        # Deep Teal
+        _T_GRAY='%F{242}'       # Slate Gray
+    elif [[ "$theme_name" == "nord" ]]; then
+        # Arctic palette
+        _T_CYAN='%F{110}'
+        _T_MAGENTA='%F{139}'
+        _T_YELLOW='%F{222}'
+        _T_GREEN='%F{150}'
+        _T_RED='%F{167}'
+        _T_BLUE='%F{81}'
+        _T_GRAY='%F{246}'
+    elif [[ "$theme_name" == "tokyo-night" ]]; then
+        # Tokyo Night palette
+        _T_CYAN='%F{75}'
+        _T_MAGENTA='%F{176}'
+        _T_YELLOW='%F{215}'
+        _T_GREEN='%F{114}'
+        _T_RED='%F{203}'
+        _T_BLUE='%F{38}'
+        _T_GRAY='%F{244}'
+    elif [[ "$theme_name" == "dracula" ]]; then
+        # Dracula palette
+        _T_CYAN='%F{117}'
+        _T_MAGENTA='%F{141}'
+        _T_YELLOW='%F{228}'
+        _T_GREEN='%F{84}'
+        _T_RED='%F{212}'
+        _T_BLUE='%F{141}'
+        _T_GRAY='%F{244}'
+    else
+        # Default Catppuccin Mocha Dark
+        _T_CYAN='%F{117}'
+        _T_MAGENTA='%F{141}'
+        _T_YELLOW='%F{216}'
+        _T_GREEN='%F{120}'
+        _T_RED='%F{204}'
+        _T_BLUE='%F{75}'
+        _T_GRAY='%F{245}'
+    fi
+    _T_RESET='%f%b'
+}
+
+_terminaly_load_prompt_colors
 
 # Fast git status parser
 function _terminaly_git_segment() {

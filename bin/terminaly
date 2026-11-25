@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.curses_ui import InteractivePicker
 from core.sysinfo import get_system_summary
 from core.db import query_frecency, get_history_stats, ensure_terminaly_dir
+from core.theme import THEMES, get_theme_name, set_theme_name
 
 # ==================== PTY MULTIPLEXER ====================
 
@@ -218,6 +219,73 @@ def run_doctor():
 
     print(f"\n\033[32mStatus: All native prerequisites are available offline.\033[0m\n")
 
+# ==================== THEME MANAGER ====================
+
+def run_theme(action: str = "picker", target: str = ""):
+    current = get_theme_name()
+    if action == "current":
+        t = THEMES.get(current, {})
+        print(f"Active Theme: \033[1m{t.get('name', current)}\033[0m ({current}) - {t.get('desc', '')}")
+        return
+
+    if action == "set" or (action not in ("picker", "list") and action in THEMES):
+        tgt = target or action
+        if tgt in THEMES:
+            set_theme_name(tgt)
+            t = THEMES[tgt]
+            print(f"\033[32m✓ Active theme set to:\033[0m \033[1m{t['name']}\033[0m ({tgt})")
+            print(f"  {t['desc']}")
+        else:
+            print(f"\033[31mError: Unknown theme '{tgt}'. Run 'terminaly theme list' to see available themes.\033[0m")
+        return
+
+    if action == "list":
+        print("\n\033[1m\033[36m=== Terminaly Available Themes ===\033[0m\n")
+        for key, t in THEMES.items():
+            active_mark = " \033[32m(active)\033[0m" if key == current else ""
+            ansi = t.get("ansi", {})
+            sample = f"{ansi.get('primary', '')}■{ansi.get('secondary', '')}■{ansi.get('success', '')}■{ansi.get('warning', '')}■{ansi.get('danger', '')}■{ansi.get('accent', '')}■\033[0m"
+            print(f"  \033[1m{key.ljust(14)}\033[0m {sample}  {t['name'].ljust(30)} [{t['type']}]{active_mark}")
+            print(f"                 \033[2m{t['desc']}\033[0m")
+        print("\nTo activate a theme: \033[1mterminaly theme set <name>\033[0m\n")
+        return
+
+    # Default: Interactive picker
+    items = []
+    for key, t in THEMES.items():
+        prefix = "✓ " if key == current else "  "
+        items.append((f"{prefix}{t['name'].ljust(28)} [{t['type']}]", key))
+
+    def preview_theme(theme_key: str) -> List[str]:
+        t = THEMES.get(theme_key, {})
+        return [
+            f"Theme: {t.get('name', theme_key)}",
+            f"Type:  {t.get('type', 'dark').upper()} Mode",
+            "",
+            "Description:",
+            f"  {t.get('desc', '')}",
+            "",
+            "Color Palette:",
+            "  Primary / Header",
+            "  Highlight Bar (High Contrast)",
+            "  Muted Details (Readable)",
+            "  Success / Warning / Danger",
+            "",
+            "Press [Enter] to activate this theme."
+        ]
+
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except Exception:
+        pass
+
+    picker = InteractivePicker(title="Select Terminaly Theme", items=items, preview_fn=preview_theme)
+    chosen = picker.run()
+    if chosen:
+        set_theme_name(chosen)
+        t = THEMES[chosen]
+        print(f"\n\033[32m✓ Activated theme:\033[0m \033[1m{t['name']}\033[0m ({chosen})\n")
+
 # ==================== MAIN ====================
 
 def main():
@@ -229,6 +297,10 @@ def main():
     subparsers.add_parser("session", help="Launch interactive fuzzy session & project switcher")
     subparsers.add_parser("doctor", help="Run diagnostic environment health check")
 
+    p_theme = subparsers.add_parser("theme", help="Manage terminal and TUI themes")
+    p_theme.add_argument("action", nargs="?", default="picker", help="picker, list, set, or current")
+    p_theme.add_argument("name", nargs="?", default="", help="Theme name to set")
+
     args = parser.parse_args()
 
     if args.subcommand == "mux":
@@ -239,6 +311,8 @@ def main():
         run_session_switcher()
     elif args.subcommand == "doctor":
         run_doctor()
+    elif args.subcommand == "theme":
+        run_theme(args.action, args.name)
     else:
         parser.print_help()
 

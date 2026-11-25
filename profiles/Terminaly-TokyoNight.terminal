@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ProfileCurrentVersion</key>
+	<real>2.0699999999999998</real>
+	<key>name</key>
+	<string>Terminaly TokyoNight</string>
+	<key>type</key>
+	<string>Window Settings</string>
+	<key>useOptionAsMetaKey</key>
+	<true/>
+	<key>FontAntialiasing</key>
+	<true/>
+	<key>CursorType</key>
+	<integer>1</integer>
+	<key>CursorBlink</key>
+	<true/>
+	<key>ColumnCount</key>
+	<integer>120</integer>
+	<key>RowCount</key>
+	<integer>34</integer>
+</dict>
+</plist>
