@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Terminaly AI Task Runner: Step-by-step interactive command execution (Warp Terminal equivalent)."""
 
+import difflib
 import json
 import os
 import re
@@ -41,142 +42,264 @@ def get_shell_context() -> Dict[str, Any]:
         "files_sample": [f.name for f in list(Path(cwd).iterdir())[:10] if not f.name.startswith(".")]
     }
 
+def has_fuzzy_match(words: List[str], target_keywords: List[str], cutoff: float = 0.72) -> bool:
+    """Checks if any word in the user's prompt matches a keyword, even with typos."""
+    for w in words:
+        clean_w = w.lower().strip(".,!?\"'`:;()")
+        if clean_w in target_keywords:
+            return True
+        matches = difflib.get_close_matches(clean_w, target_keywords, n=1, cutoff=cutoff)
+        if matches:
+            return True
+    return False
+
 def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict[str, str]]]:
     """
     Decomposes a user task or question into a title and an ordered list of executable steps.
-    Each step contains:
-      - 'title': short step name
-      - 'command': exact shell command to run
-      - 'explain': brief description of what the command does
-      - 'safety': 'SAFE' (read-only), 'MODIFY' (edits/creates), or 'CAUTION' (deletes/replaces)
+    Supports natural language queries, questions, and typo-tolerant intent recognition.
     """
-    p_lower = prompt.lower().strip()
-    steps: List[Dict[str, str]] = []
-    goal_title = prompt.strip()
+    p_clean = prompt.strip()
+    words = p_clean.split()
+    p_lower = p_clean.lower()
 
-    # Heuristic template matches for common user queries
-    # 1. Git workflows: branch cleanup, commit, stash, worktrees
-    if "branch" in p_lower and ("clean" in p_lower or "delete" in p_lower or "merged" in p_lower):
+    # 1. Largest / Biggest / File Size queries (handles "largets", "biggest", "heavy", etc.)
+    if has_fuzzy_match(words, ["largest", "biggest", "large", "heaviest", "size"]) and ("file" in p_lower or "folder" in p_lower or "dir" in p_lower or "here" in p_lower):
+        goal_title = "Find the largest files in current directory and subfolders"
+        steps = [
+            {
+                "title": "List files in current folder sorted by size (largest first)",
+                "command": "ls -lhS | grep -v '^total' | head -n 6",
+                "explain": "Lists files in the current directory with human-readable sizes (GB/MB/KB) ordered from largest to smallest.",
+                "safety": "SAFE"
+            },
+            {
+                "title": "Find the top 5 largest files recursively across all subfolders",
+                "command": "find . -type f -not -path '*/.*' -exec ls -lh {} + 2>/dev/null | sort -k5,5 -hr | head -n 5",
+                "explain": "Recursively searches all non-hidden directories to locate the largest files on disk.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 2. Smallest / Empty files
+    if has_fuzzy_match(words, ["smallest", "tiny"]) and "file" in p_lower:
+        goal_title = "Find smallest files in current directory"
+        steps = [
+            {
+                "title": "List files sorted by size (smallest first)",
+                "command": "ls -lhrS | grep -v '^total' | head -n 6",
+                "explain": "Lists files in ascending size order.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    if has_fuzzy_match(words, ["empty", "blank"]) and ("file" in p_lower or "folder" in p_lower or "dir" in p_lower):
+        goal_title = "Find empty files and directories"
+        steps = [
+            {
+                "title": "Locate 0-byte empty files in current directory",
+                "command": "find . -maxdepth 2 -type f -empty -not -path '*/.*'",
+                "explain": "Searches for empty files that contain 0 bytes.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 3. Newest / Latest / Recent files
+    if has_fuzzy_match(words, ["newest", "latest", "recent", "modified"]) and ("file" in p_lower or "changes" in p_lower or "here" in p_lower):
+        goal_title = "Find most recently modified files"
+        steps = [
+            {
+                "title": "List newest modified files in current directory",
+                "command": "ls -lht | head -n 8",
+                "explain": "Displays files sorted by modification time with newest items at the top.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 4. Count / How many files
+    if has_fuzzy_match(words, ["count", "number"]) or ("how" in p_lower and "many" in p_lower):
+        goal_title = "Count files and directories"
+        steps = [
+            {
+                "title": "Count total files and folders",
+                "command": 'echo "Files: $(find . -maxdepth 1 -type f -not -name ".*" | wc -l | tr -d " ") | Subdirs: $(find . -maxdepth 1 -type d -not -name ".*" | wc -l | tr -d " ")"',
+                "explain": "Calculates the count of files and subdirectories in the current directory.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 5. Git Workflows
+    if has_fuzzy_match(words, ["branch", "branches"]) and has_fuzzy_match(words, ["clean", "delete", "cleanup", "prune", "merged"]):
         goal_title = "Clean up merged local Git branches"
         steps = [
             {
-                "title": "Check current branch and local branches",
+                "title": "Check merged local branches",
                 "command": "git branch --merged",
-                "explain": "Lists local branches that have already been merged into the current branch.",
+                "explain": "Lists local branches that have already been integrated into current branch.",
                 "safety": "SAFE"
             },
             {
-                "title": "Prune remote-tracking branch references",
+                "title": "Prune stale remote branch trackers",
                 "command": "git fetch --prune",
-                "explain": "Removes stale references to branches deleted on the remote repository.",
+                "explain": "Synchronizes local git reference table with deleted remote branches.",
                 "safety": "SAFE"
             },
             {
-                "title": "Safely delete merged branches (excluding master/main)",
-                "command": 'git branch --merged | grep -Ev "(^\\*|master|main|dev)" | xargs -n 1 git branch -d 2>/dev/null || echo "No branches to remove"',
-                "explain": "Deletes merged branches while protecting current, main, master, and dev branches.",
+                "title": "Delete merged branches (protecting master/main/dev)",
+                "command": 'git branch --merged | grep -Ev "(^\\*|master|main|dev)" | xargs -n 1 git branch -d 2>/dev/null || echo "No merged branches to remove"',
+                "explain": "Safely removes merged branches without touching protected branches.",
                 "safety": "CAUTION"
             }
         ]
+        return goal_title, steps
 
-    elif "commit" in p_lower and ("push" in p_lower or "all" in p_lower or "changes" in p_lower):
-        goal_title = "Stage, commit, and push repository changes"
-        msg = "update: save progress"
+    if has_fuzzy_match(words, ["commit", "push"]) and has_fuzzy_match(words, ["all", "changes", "save", "sync"]):
+        goal_title = "Stage, commit, and push pending changes"
+        msg = "chore: update work"
         m_match = re.search(r'["\']([^"\']+)["\']', prompt)
         if m_match:
             msg = m_match.group(1)
         steps = [
             {
-                "title": "Inspect modified and untracked files",
+                "title": "Review pending modifications",
                 "command": "git status -s",
-                "explain": "Shows a concise overview of pending repository changes.",
+                "explain": "Displays staged and unstaged file modifications.",
                 "safety": "SAFE"
             },
             {
                 "title": "Stage modified tracked files",
                 "command": "git add -u",
-                "explain": "Stages changes to existing files without including uninspected new files.",
+                "explain": "Stages changes in tracked files without accidentally adding untracked build artifacts.",
                 "safety": "MODIFY"
             },
             {
-                "title": "Create Git commit",
+                "title": "Commit changes",
                 "command": f'git commit -m "{msg}"',
-                "explain": f"Commits staged changes with message '{msg}'.",
+                "explain": f"Creates commit with message '{msg}'.",
                 "safety": "MODIFY"
             }
         ]
+        return goal_title, steps
 
-    # 2. Large files / Disk usage
-    elif "large file" in p_lower or "disk" in p_lower or "space" in p_lower or "biggest" in p_lower:
-        goal_title = "Identify largest files and disk consumers"
+    if has_fuzzy_match(words, ["diff", "changes", "modified"]) and ("git" in p_lower or context["git"]["is_git"]):
+        goal_title = "Inspect uncommitted Git diffs"
         steps = [
             {
-                "title": "Find top 10 largest files in current directory",
-                "command": "find . -type f -not -path '*/.*' -exec ls -lh {} + 2>/dev/null | sort -k5,5 -hr | head -n 10",
-                "explain": "Scans for the 10 largest non-hidden files and sorts them by file size.",
-                "safety": "SAFE"
-            },
-            {
-                "title": "Inspect disk usage breakdown by folder",
-                "command": "du -sh */ 2>/dev/null | sort -hr | head -n 10",
-                "explain": "Calculates folder sizes for top-level subdirectories.",
+                "title": "Display summary of changed lines and files",
+                "command": "git diff --stat",
+                "explain": "Summarizes insertion and deletion counts for all modified files.",
                 "safety": "SAFE"
             }
         ]
+        return goal_title, steps
 
-    # 3. Process / CPU / Port inspection
-    elif "port" in p_lower or "listen" in p_lower:
+    # 6. Ports & Network
+    if has_fuzzy_match(words, ["port", "listen", "listening"]):
         m_port = re.search(r'(\d{2,5})', prompt)
         target_port = m_port.group(1) if m_port else "8080"
-        goal_title = f"Find and manage process using port {target_port}"
+        goal_title = f"Find and inspect process listening on port {target_port}"
         steps = [
             {
-                "title": f"Check which process is listening on port {target_port}",
+                "title": f"Identify process holding port {target_port}",
                 "command": f"lsof -i :{target_port}",
-                "explain": f"Identifies the process PID, name, and owner listening on port {target_port}.",
+                "explain": f"Displays the PID and application name listening on TCP/UDP port {target_port}.",
                 "safety": "SAFE"
             }
         ]
+        return goal_title, steps
 
-    elif "kill" in p_lower or "stop process" in p_lower:
-        goal_title = "Find and terminate high-resource process"
+    if has_fuzzy_match(words, ["ip", "address", "network", "wifi"]) and ("my" in p_lower or "what" in p_lower or "local" in p_lower):
+        goal_title = "Inspect local and public network IP addresses"
+        steps = [
+            {
+                "title": "Display local LAN IP address",
+                "command": "echo 'Local IP: '$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo 'Unknown')",
+                "explain": "Queries the macOS network interface for current Wi-Fi/Ethernet IP address.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 7. Processes & System Stats
+    if has_fuzzy_match(words, ["process", "processes", "top", "cpu", "ram", "memory", "heavy"]):
+        goal_title = "Inspect top resource-consuming processes"
         steps = [
             {
                 "title": "List top 5 processes by CPU utilization",
                 "command": "ps -Ao pid,%cpu,%mem,comm | sort -k2,2 -nr | head -n 6",
-                "explain": "Lists the most CPU-intensive active processes.",
+                "explain": "Lists active processes sorted by CPU percentage.",
+                "safety": "SAFE"
+            },
+            {
+                "title": "List top 5 processes by Memory consumption",
+                "command": "ps -Ao pid,%cpu,%mem,comm | sort -k3,3 -nr | head -n 6",
+                "explain": "Lists active processes sorted by RAM percentage.",
                 "safety": "SAFE"
             }
         ]
+        return goal_title, steps
 
-    # 4. Search and replace in files
-    elif "search" in p_lower or "find" in p_lower or "grep" in p_lower:
-        words = [w for w in prompt.split() if w.lower() not in ("search", "find", "grep", "for", "in", "files")]
-        pattern = words[0] if words else "TODO"
-        goal_title = f"Search files for pattern '{pattern}'"
+    # 8. File Searching by Name
+    if has_fuzzy_match(words, ["where", "locate", "find"]) and not ("large" in p_lower or "biggest" in p_lower):
+        # Extract target search term
+        cleaned_tokens = [w.strip(".,!?\"'") for w in words if w.lower() not in ("where", "is", "the", "find", "locate", "file", "folder", "here", "in", "a")]
+        search_target = cleaned_tokens[0] if cleaned_tokens else "*"
+        goal_title = f"Locate files matching '{search_target}'"
         steps = [
             {
-                "title": f"Search matching files for '{pattern}'",
-                "command": f"grep -rn --exclude-dir='.git' --exclude-dir='node_modules' --exclude-dir='__pycache__' '{pattern}' . | head -n 25",
-                "explain": f"Recursively finds occurrences of '{pattern}' with line numbers.",
+                "title": f"Search current directory for files matching '{search_target}'",
+                "command": f'find . -iname "*{search_target}*" -not -path "*/.*" | head -n 15',
+                "explain": f"Case-insensitive search for files or folders with names containing '{search_target}'.",
                 "safety": "SAFE"
             }
         ]
+        return goal_title, steps
 
-    # 5. General fallback: try Antigravity agentapi or construct command
+    # 9. Text Content Search (grep)
+    if has_fuzzy_match(words, ["grep", "search", "contains", "mention"]):
+        cleaned_tokens = [w.strip(".,!?\"'") for w in words if w.lower() not in ("search", "grep", "for", "text", "contains", "in", "files", "code")]
+        pattern = cleaned_tokens[0] if cleaned_tokens else "TODO"
+        goal_title = f"Search file contents for '{pattern}'"
+        steps = [
+            {
+                "title": f"Grep for pattern '{pattern}'",
+                "command": f"grep -rn --exclude-dir='.git' --exclude-dir='node_modules' --exclude-dir='__pycache__' '{pattern}' . | head -n 20",
+                "explain": f"Recursively scans files for occurrences of '{pattern}' with line numbers.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 10. General Intelligent Fallback: Dynamic Synthesizer
+    # Extract query intent words and create targeted exploration
+    goal_title = f"Task: {p_clean}"
+    
+    # Check if target is a file in directory
+    matched_file = None
+    for f in context.get("files_sample", []):
+        if f.lower() in p_lower:
+            matched_file = f
+            break
+
+    if matched_file:
+        steps = [
+            {
+                "title": f"Inspect details of '{matched_file}'",
+                "command": f"ls -lh '{matched_file}' && head -n 20 '{matched_file}'",
+                "explain": f"Displays file metadata and preview for {matched_file}.",
+                "safety": "SAFE"
+            }
+        ]
     else:
-        # Check if agentapi is reachable
-        agentapi_bin = Path.home() / ".gemini" / "antigravity" / "bin" / "agentapi"
-        if not agentapi_bin.exists():
-            agentapi_bin = Path("/Applications/Antigravity.app/Contents/Resources/bin/language_server")
-
-        goal_title = f"Task: {prompt}"
-        # Provide general single or multi-step execution
         steps = [
             {
-                "title": "Analyze and prepare execution context",
-                "command": f"echo 'Running task: {prompt}'",
-                "explain": "Initial step to inspect current directory state.",
+                "title": f"Inspect relevant items in current directory",
+                "command": "tls -l",
+                "explain": "Lists directory entries with permissions, sizes, and git status.",
                 "safety": "SAFE"
             }
         ]
