@@ -49,9 +49,22 @@ function tfm() {
 # Alias to handle typo 'tmf'
 alias tmf="tfm"
 
-# AI Task & Workflow runner (Warp Terminal style)
+# AI Task & Workflow runner (Warp Terminal style) with auto-landing on directory transitions
 function task() {
     "$TERMINALY_HOME/bin/terminaly" task "$@"
+
+    local target=""
+    if [[ -f "$HOME/.terminaly/lastdir" ]]; then
+        target=$(cat "$HOME/.terminaly/lastdir" 2>/dev/null)
+        rm -f "$HOME/.terminaly/lastdir"
+    elif [[ -f "$TERMINALY_HOME/.terminaly_data/lastdir" ]]; then
+        target=$(cat "$TERMINALY_HOME/.terminaly_data/lastdir" 2>/dev/null)
+        rm -f "$TERMINALY_HOME/.terminaly_data/lastdir"
+    fi
+
+    if [[ -n "$target" && -d "$target" && "$target" != "$PWD" ]]; then
+        cd "$target"
+    fi
 }
 alias ask="task"
 

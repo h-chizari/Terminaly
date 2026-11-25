@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # Ensure core is in path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.db import ensure_terminaly_dir
 from core.theme import get_active_theme
 
 def get_shell_context() -> Dict[str, Any]:
@@ -54,10 +55,13 @@ def has_fuzzy_match(words: List[str], target_keywords: List[str], cutoff: float 
     """Checks if any word in the user's prompt matches a keyword, even with typos."""
     for w in words:
         clean_w = w.lower().strip(".,!?\"'`:;()")
-        if not clean_w or clean_w in STOP_WORDS:
+        if not clean_w:
             continue
+        # Exact keyword match ALWAYS wins, even if clean_w is in STOP_WORDS
         if clean_w in target_keywords:
             return True
+        if clean_w in STOP_WORDS:
+            continue
         # Only fuzzy match words of reasonable length (>= 4) and close length difference
         if len(clean_w) < 4:
             continue
@@ -270,23 +274,78 @@ def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict
         ]
         return goal_title, steps
 
-    # 8. File Searching by Name
-    if has_fuzzy_match(words, ["where", "locate", "find"]) and not ("large" in p_lower or "biggest" in p_lower):
-        # Extract target search term
-        cleaned_tokens = [w.strip(".,!?\"'") for w in words if w.lower() not in ("where", "is", "the", "find", "locate", "file", "folder", "here", "in", "a")]
-        search_target = cleaned_tokens[0] if cleaned_tokens else "*"
-        goal_title = f"Locate files matching '{search_target}'"
+    # 8. Directory / Folder Search & Navigation (e.g. "where is .Video folder", "find Video dir", "go to Videos", "cd Videos")
+    is_dir_query = any(k in p_lower for k in ["folder", "dir", "directory"]) or any(w.lower() in ["cd", "goto", "open"] for w in words)
+    is_search_intent = has_fuzzy_match(words, ["where", "locate", "find", "search", "show", "goto", "open", "cd"])
+
+    # Extract session memory paths
+    session_history = context.get("session_history", [])
+    recent_paths: List[str] = []
+    for hist in session_history:
+        for p_item in hist.get("paths_found", []):
+            if p_item not in recent_paths:
+                recent_paths.append(p_item)
+
+    if (is_dir_query or has_fuzzy_match(words, ["where", "locate"])) and not ("file" in p_lower and not ("folder" in p_lower or "dir" in p_lower)):
+        # Extract folder target name: filter out search/noise words
+        ignored = {"where", "is", "the", "find", "locate", "search", "show", "folder", "directory", "dir", "here", "in", "a", "an", "to", "go", "goto", "open", "cd", "my", "that", "this", "what", "which"}
+        candidates = [w.strip(".,!?\"'`:;()") for w in words if w.lower().strip(".,!?\"'`:;()").lstrip(".") not in ignored]
+        raw_target = candidates[0] if candidates else ""
+        folder_target = raw_target.lstrip(".") if raw_target.lstrip(".") else raw_target
+
+        # If user referred to "that folder" or "it", check recent_paths
+        if not folder_target or folder_target.lower() in ("that", "this", "it", "them"):
+            for rp in recent_paths:
+                clean_rp = rp.lstrip("./")
+                p_obj = Path(clean_rp)
+                if p_obj.suffix and p_obj.parent.name and p_obj.parent.name != ".":
+                    folder_target = p_obj.parent.name
+                    break
+                elif "/" in clean_rp or Path(rp).is_dir():
+                    folder_target = p_obj.name
+                    break
+        if not folder_target:
+            folder_target = "Videos"
+
+        goal_title = f"Locate and inspect '{folder_target}' folder"
         steps = [
             {
-                "title": f"Search current directory for files matching '{search_target}'",
-                "command": f'find . -iname "*{search_target}*" -not -path "*/.*" | head -n 15',
-                "explain": f"Case-insensitive search for files or folders with names containing '{search_target}'.",
+                "title": f"Locate '{folder_target}' directory across current directory and subfolders",
+                "command": f'find . -maxdepth 4 -type d -iname "*{folder_target}*" -not -path "*/.*" 2>/dev/null | head -n 10',
+                "explain": f"Searches up to 4 levels deep for directories matching '{folder_target}' (case-insensitive).",
+                "safety": "SAFE"
+            },
+            {
+                "title": f"Inspect contents and files inside '{folder_target}'",
+                "command": f'target_dir=$(find . -maxdepth 4 -type d -iname "*{folder_target}*" -not -path "*/.*" 2>/dev/null | head -n 1); if [ -n "$target_dir" ]; then echo "Found directory: $target_dir" && ls -lh "$target_dir"; else ls -lh; fi',
+                "explain": f"Displays file sizes, names, and timestamps inside {folder_target}.",
+                "safety": "SAFE"
+            },
+            {
+                "title": f"Navigate into '{folder_target}' directory",
+                "command": f'target_dir=$(find . -maxdepth 4 -type d -iname "*{folder_target}*" -not -path "*/.*" 2>/dev/null | head -n 1); if [ -n "$target_dir" ]; then cd "$target_dir" && pwd; else echo "Directory not found"; fi',
+                "explain": f"Switches the working directory directly into the located {folder_target} directory.",
                 "safety": "SAFE"
             }
         ]
         return goal_title, steps
 
-    # 9. Text Content Search (grep)
+    # 9. File Searching by Name
+    if has_fuzzy_match(words, ["where", "locate", "find"]) and not ("large" in p_lower or "biggest" in p_lower):
+        cleaned_tokens = [w.strip(".,!?\"'") for w in words if w.lower().strip(".,!?\"'").lstrip(".") not in ("where", "is", "the", "find", "locate", "file", "folder", "here", "in", "a", "an", "what")]
+        search_target = cleaned_tokens[0] if cleaned_tokens else "*"
+        goal_title = f"Locate files matching '{search_target}'"
+        steps = [
+            {
+                "title": f"Search current directory and subdirectories for '{search_target}'",
+                "command": f'find . -iname "*{search_target}*" -not -path "*/.*" | head -n 15',
+                "explain": f"Case-insensitive search for files matching '{search_target}'.",
+                "safety": "SAFE"
+            }
+        ]
+        return goal_title, steps
+
+    # 10. Text Content Search (grep)
     if has_fuzzy_match(words, ["grep", "search", "contains", "mention"]):
         cleaned_tokens = [w.strip(".,!?\"'") for w in words if w.lower() not in ("search", "grep", "for", "text", "contains", "in", "files", "code")]
         pattern = cleaned_tokens[0] if cleaned_tokens else "TODO"
@@ -301,8 +360,7 @@ def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict
         ]
         return goal_title, steps
 
-    # 10. General Intelligent Fallback: Dynamic Synthesizer
-    # Extract query intent words and create targeted exploration
+    # 11. General Intelligent Fallback: Dynamic Synthesizer
     goal_title = f"Task: {p_clean}"
     
     # Check if target is a file in directory
@@ -334,7 +392,7 @@ def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict
     return goal_title, steps
 
 def run_interactive_workflow(prompt: str):
-    """Interactive Warp-style step-by-step terminal executor."""
+    """Interactive Warp-style step-by-step terminal executor with conversational follow-up."""
     theme = get_active_theme()
     ansi = theme.get("ansi", {})
     p = ansi.get("primary", "\033[36m")
@@ -348,117 +406,177 @@ def run_interactive_workflow(prompt: str):
     rst = "\033[0m"
 
     context = get_shell_context()
-    title, steps = decompose_task(prompt, context)
+    session_history: List[Dict[str, Any]] = []
+    current_prompt = prompt
 
-    print(f"\n{b}{p}========================================================================{rst}")
-    print(f"{b}{p}  Terminaly AI Workflow: {title}{rst}")
-    print(f"{b}{p}========================================================================{rst}")
-    print(f"  {dim}Target: {context['cwd']} │ Steps: {len(steps)}{rst}\n")
+    while current_prompt:
+        context["session_history"] = session_history
+        title, steps = decompose_task(current_prompt, context)
 
-    run_all = False
-    step_idx = 0
+        print(f"\n{b}{p}========================================================================{rst}")
+        print(f"{b}{p}  Terminaly AI Workflow: {title}{rst}")
+        print(f"{b}{p}========================================================================{rst}")
+        print(f"  {dim}Target: {context['cwd']} │ Steps: {len(steps)}{rst}\n")
 
-    while step_idx < len(steps):
-        step = steps[step_idx]
-        num = step_idx + 1
-        total = len(steps)
+        run_all = False
+        step_idx = 0
 
-        # Safety badge styling
-        safety = step.get("safety", "SAFE").upper()
-        if safety == "SAFE":
-            safety_badge = f"{suc}[SAFE: Read-Only]{rst}"
-        elif safety == "MODIFY":
-            safety_badge = f"{warn}[MODIFY: Creates/Edits]{rst}"
-        else:
-            safety_badge = f"{dang}[CAUTION: Permanent Change]{rst}"
+        while step_idx < len(steps):
+            step = steps[step_idx]
+            num = step_idx + 1
+            total = len(steps)
 
-        print(f"{b}{acc}┌─ Step {num}/{total}: {step['title']} ─────────────────────────────────{rst}")
-        print(f"{b}{acc}│{rst} {b}Command:{rst}  {p}{step['command']}{rst}")
-        print(f"{b}{acc}│{rst} {b}Purpose:{rst}  {step['explain']}")
-        print(f"{b}{acc}│{rst} {b}Safety:{rst}   {safety_badge}")
-        print(f"{b}{acc}└────────────────────────────────────────────────────────────────────────{rst}")
+            # Safety badge styling
+            safety = step.get("safety", "SAFE").upper()
+            if safety == "SAFE":
+                safety_badge = f"{suc}[SAFE: Read-Only]{rst}"
+            elif safety == "MODIFY":
+                safety_badge = f"{warn}[MODIFY: Creates/Edits]{rst}"
+            else:
+                safety_badge = f"{dang}[CAUTION: Permanent Change]{rst}"
 
-        current_cmd = step['command']
+            print(f"{b}{acc}┌─ Step {num}/{total}: {step['title']} ─────────────────────────────────{rst}")
+            print(f"{b}{acc}│{rst} {b}Command:{rst}  {p}{step['command']}{rst}")
+            print(f"{b}{acc}│{rst} {b}Purpose:{rst}  {step['explain']}")
+            print(f"{b}{acc}│{rst} {b}Safety:{rst}   {safety_badge}")
+            print(f"{b}{acc}└────────────────────────────────────────────────────────────────────────{rst}")
 
-        if not run_all:
-            print(f"  {b}Actions:{rst} [r/Enter] Run  [e] Edit  [s] Skip  [a] Run All  [q/Ctrl+C] Quit")
-            try:
-                choice = input(f"  {p}❯{rst} ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print(f"\n{warn}Workflow cancelled.{rst}")
-                return
+            current_cmd = step['command']
 
-            if choice in ("q", "quit", "exit"):
-                print(f"{warn}Aborted workflow.{rst}\n")
-                return
-            elif choice in ("s", "skip"):
-                print(f"{dim}Skipped Step {num}.{rst}\n")
-                step_idx += 1
-                continue
-            elif choice in ("a", "all"):
-                run_all = True
-            elif choice in ("e", "edit"):
+            if not run_all:
+                print(f"  {b}Actions:{rst} [r/Enter] Run  [e] Edit  [s] Skip  [a] Run All  [q/Ctrl+C] Quit")
                 try:
-                    import readline
-                    readline.set_startup_hook(lambda: readline.insert_text(current_cmd))
-                    current_cmd = input(f"  {b}Edit Command:{rst} ").strip()
-                except Exception:
-                    current_cmd = input(f"  {b}New Command:{rst} ").strip()
-                finally:
-                    try:
-                        readline.set_startup_hook(None)
-                    except Exception:
-                        pass
-                if not current_cmd:
-                    print(f"{dim}Cancelled edit, skipping.{rst}\n")
+                    choice = input(f"  {p}❯{rst} ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    print(f"\n{warn}Workflow cancelled.{rst}")
+                    return
+
+                if choice in ("q", "quit", "exit"):
+                    print(f"{warn}Aborted workflow.{rst}\n")
+                    return
+                elif choice in ("s", "skip"):
+                    print(f"{dim}Skipped Step {num}.{rst}\n")
                     step_idx += 1
                     continue
-
-        # Execute Command
-        print(f"\n{b}{suc}▶ Executing:{rst} {current_cmd}\n")
-        start_time = time.time()
-        shell_bin = os.environ.get("SHELL", "/bin/zsh")
-        proc = subprocess.run([shell_bin, "-c", current_cmd], cwd=context["cwd"])
-        elapsed = time.time() - start_time
-        exit_code = proc.returncode
-
-        if exit_code == 0:
-            print(f"\n{b}{suc}✓ Step {num} completed successfully ({elapsed:.2f}s){rst}\n")
-            step_idx += 1
-        else:
-            print(f"\n{b}{dang}✗ Step {num} failed with exit code {exit_code} ({elapsed:.2f}s){rst}")
-            run_all = False
-            print(f"  {b}Options:{rst} [r] Retry  [e] Edit  [s] Skip  [q] Abort")
-            try:
-                err_choice = input(f"  {dang}❯{rst} ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print(f"\n{warn}Workflow aborted.{rst}")
-                return
-            if err_choice in ("r", "retry", ""):
-                continue
-            elif err_choice in ("s", "skip"):
-                step_idx += 1
-                continue
-            elif err_choice in ("e", "edit"):
-                try:
-                    import readline
-                    readline.set_startup_hook(lambda: readline.insert_text(current_cmd))
-                    steps[step_idx]["command"] = input(f"  {b}Edit Command:{rst} ").strip()
-                except Exception:
-                    steps[step_idx]["command"] = input(f"  {b}New Command:{rst} ").strip()
-                finally:
+                elif choice in ("a", "all"):
+                    run_all = True
+                elif choice in ("e", "edit"):
                     try:
-                        readline.set_startup_hook(None)
+                        import readline
+                        readline.set_startup_hook(lambda: readline.insert_text(current_cmd))
+                        current_cmd = input(f"  {b}Edit Command:{rst} ").strip()
                     except Exception:
-                        pass
-                continue
-            else:
-                print(f"{warn}Aborted workflow.{rst}\n")
-                return
+                        current_cmd = input(f"  {b}New Command:{rst} ").strip()
+                    finally:
+                        try:
+                            readline.set_startup_hook(None)
+                        except Exception:
+                            pass
+                    if not current_cmd:
+                        print(f"{dim}Cancelled edit, skipping.{rst}\n")
+                        step_idx += 1
+                        continue
 
-    print(f"{b}{suc}========================================================================{rst}")
-    print(f"{b}{suc}  ✓ Workflow complete! All steps executed.{rst}")
-    print(f"{b}{suc}========================================================================{rst}\n")
+            # Execute Command with live stream output & output capture
+            print(f"\n{b}{suc}▶ Executing:{rst} {current_cmd}\n")
+            start_time = time.time()
+            shell_bin = os.environ.get("SHELL", "/bin/zsh")
+
+            cmd_with_pwd = f"{current_cmd} && pwd > /tmp/.terminaly_task_pwd 2>/dev/null || true"
+            proc = subprocess.Popen(
+                [shell_bin, "-c", cmd_with_pwd],
+                cwd=context["cwd"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            output_lines = []
+            if proc.stdout:
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    output_lines.append(line)
+            proc.wait()
+            elapsed = time.time() - start_time
+            exit_code = proc.returncode
+
+            # Check if directory changed
+            try:
+                pwd_tmp = Path("/tmp/.terminaly_task_pwd")
+                if pwd_tmp.exists():
+                    new_pwd = pwd_tmp.read_text(encoding="utf-8").strip().splitlines()[-1]
+                    if new_pwd and os.path.isdir(new_pwd) and new_pwd != context["cwd"]:
+                        context["cwd"] = new_pwd
+                        try:
+                            lastdir_file = ensure_terminaly_dir() / "lastdir"
+                            lastdir_file.write_text(new_pwd, encoding="utf-8")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Extract discovered file/dir paths from output for conversational follow-up memory
+            full_out = "".join(output_lines)
+            found_paths = re.findall(r'(?:(?:\./|[a-zA-Z0-9_\-\.]+/)[a-zA-Z0-9_\-\.\s/]+|[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]{2,5})', full_out)
+            clean_paths = [p_str.strip() for p_str in found_paths if len(p_str.strip()) > 2 and not p_str.strip().startswith("-")]
+            session_history.append({
+                "step": num,
+                "command": current_cmd,
+                "output": full_out,
+                "paths_found": clean_paths[:15]
+            })
+
+            if exit_code == 0:
+                print(f"\n{b}{suc}✓ Step {num} completed successfully ({elapsed:.2f}s){rst}\n")
+                step_idx += 1
+            else:
+                print(f"\n{b}{dang}✗ Step {num} failed with exit code {exit_code} ({elapsed:.2f}s){rst}")
+                run_all = False
+                print(f"  {b}Options:{rst} [r] Retry  [e] Edit  [s] Skip  [q] Abort")
+                try:
+                    err_choice = input(f"  {dang}❯{rst} ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    print(f"\n{warn}Workflow aborted.{rst}")
+                    return
+                if err_choice in ("r", "retry", ""):
+                    continue
+                elif err_choice in ("s", "skip"):
+                    step_idx += 1
+                    continue
+                elif err_choice in ("e", "edit"):
+                    try:
+                        import readline
+                        readline.set_startup_hook(lambda: readline.insert_text(current_cmd))
+                        steps[step_idx]["command"] = input(f"  {b}Edit Command:{rst} ").strip()
+                    except Exception:
+                        steps[step_idx]["command"] = input(f"  {b}New Command:{rst} ").strip()
+                    finally:
+                        try:
+                            readline.set_startup_hook(None)
+                        except Exception:
+                            pass
+                    continue
+                else:
+                    print(f"{warn}Aborted workflow.{rst}\n")
+                    return
+
+        print(f"{b}{suc}========================================================================{rst}")
+        print(f"{b}{suc}  ✓ Workflow complete! All steps executed.{rst}")
+        print(f"{b}{suc}========================================================================{rst}\n")
+
+        # Conversational Follow-up Prompt
+        print(f"  {b}{p}💬 Follow-up:{rst} Ask a follow-up question/task, or press {b}[Enter/Ctrl+C]{rst} to finish.")
+        try:
+            follow_up = input(f"  {p}❯{rst} ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{dim}Exited task session.{rst}\n")
+            break
+
+        if not follow_up or follow_up.lower() in ("q", "quit", "exit", "done", "no"):
+            break
+
+        current_prompt = follow_up
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
