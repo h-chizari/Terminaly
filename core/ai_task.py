@@ -42,15 +42,31 @@ def get_shell_context() -> Dict[str, Any]:
         "files_sample": [f.name for f in list(Path(cwd).iterdir())[:10] if not f.name.startswith(".")]
     }
 
-def has_fuzzy_match(words: List[str], target_keywords: List[str], cutoff: float = 0.72) -> bool:
+STOP_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "up", "about",
+    "into", "over", "after", "how", "what", "which", "who", "where", "why",
+    "when", "can", "could", "would", "should", "do", "does", "did", "you",
+    "we", "i", "me", "my", "our", "your", "it", "its", "here", "there", "this", "that"
+}
+
+def has_fuzzy_match(words: List[str], target_keywords: List[str], cutoff: float = 0.78) -> bool:
     """Checks if any word in the user's prompt matches a keyword, even with typos."""
     for w in words:
         clean_w = w.lower().strip(".,!?\"'`:;()")
+        if not clean_w or clean_w in STOP_WORDS:
+            continue
         if clean_w in target_keywords:
             return True
-        matches = difflib.get_close_matches(clean_w, target_keywords, n=1, cutoff=cutoff)
-        if matches:
-            return True
+        # Only fuzzy match words of reasonable length (>= 4) and close length difference
+        if len(clean_w) < 4:
+            continue
+        for target in target_keywords:
+            if abs(len(clean_w) - len(target)) > 2:
+                continue
+            ratio = difflib.SequenceMatcher(None, clean_w, target).ratio()
+            if ratio >= cutoff:
+                return True
     return False
 
 def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict[str, str]]]:
@@ -198,18 +214,29 @@ def decompose_task(prompt: str, context: Dict[str, Any]) -> Tuple[str, List[Dict
         return goal_title, steps
 
     # 6. Ports & Network
-    if has_fuzzy_match(words, ["port", "listen", "listening"]):
+    if has_fuzzy_match(words, ["port", "ports", "listen", "listening"]):
         m_port = re.search(r'(\d{2,5})', prompt)
-        target_port = m_port.group(1) if m_port else "8080"
-        goal_title = f"Find and inspect process listening on port {target_port}"
-        steps = [
-            {
-                "title": f"Identify process holding port {target_port}",
-                "command": f"lsof -i :{target_port}",
-                "explain": f"Displays the PID and application name listening on TCP/UDP port {target_port}.",
-                "safety": "SAFE"
-            }
-        ]
+        if m_port:
+            target_port = m_port.group(1)
+            goal_title = f"Find and inspect process listening on port {target_port}"
+            steps = [
+                {
+                    "title": f"Identify process holding port {target_port}",
+                    "command": f"lsof -i :{target_port}",
+                    "explain": f"Displays the PID and application name listening on TCP/UDP port {target_port}.",
+                    "safety": "SAFE"
+                }
+            ]
+        else:
+            goal_title = "List all active TCP listening ports and services"
+            steps = [
+                {
+                    "title": "List all active listening TCP ports",
+                    "command": "lsof -iTCP -sTCP:LISTEN -P -n | head -n 25",
+                    "explain": "Lists applications and daemons currently listening for incoming TCP network connections.",
+                    "safety": "SAFE"
+                }
+            ]
         return goal_title, steps
 
     if has_fuzzy_match(words, ["ip", "address", "network", "wifi"]) and ("my" in p_lower or "what" in p_lower or "local" in p_lower):
