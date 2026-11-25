@@ -88,8 +88,13 @@ terminaly doctor
 - **Interactive Dashboards & File Manager**:
   ```zsh
   tboard                  # Launch Worktree & Antigravity Agent dashboard
-  tfm                     # Launch dual-pane visual file manager
+  tfm                     # Launch dual-pane visual file manager with bottom command prompt
   ```
+  Inside `tfm`:
+  - Press `:` or `!` to activate the **Integrated Shell Command Prompt**.
+  - Type any command (`git status`, `mkdir`, `touch`, `python script.py`, or `cd <dir>`).
+  - Use `%f` to insert the selected file's path, or `%n` for its filename.
+  - Press `Tab` for filename auto-completion, `↑`/`↓` for command history, `Enter` to run, `Esc` to cancel.
 - **Antigravity AI Bridge**:
   ```zsh
   tai ask "Refactor this function to improve performance" -f main.py
