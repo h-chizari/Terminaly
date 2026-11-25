@@ -95,6 +95,17 @@ terminaly doctor
   - Type any command (`git status`, `mkdir`, `touch`, `python script.py`, or `cd <dir>`).
   - Use `%f` to insert the selected file's path, or `%n` for its filename.
   - Press `Tab` for filename auto-completion, `↑`/`↓` for command history, `Enter` to run, `Esc` to cancel.
+- **Interactive AI Step-by-Step Workflows (Warp Terminal style)**:
+  ```zsh
+  task "clean up merged git branches"
+  ask "find files larger than 100MB and inspect disk usage"
+  task "find what process is using port 3000 and stop it"
+  ```
+  Decomposes your goal into structured steps with safety ratings (`SAFE`, `MODIFY`, `CAUTION`).
+  - Press `[r]` or `[Enter]` to run the step.
+  - Press `[e]` to tweak/edit the command before execution.
+  - Press `[s]` to skip to the next step.
+  - Press `[a]` to run all remaining steps automatically.
 - **Antigravity AI Bridge**:
   ```zsh
   tai ask "Refactor this function to improve performance" -f main.py
