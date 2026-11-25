@@ -4,7 +4,7 @@
 autoload -Uz add-zsh-hook
 
 function _terminaly_chpwd_record() {
-    python3 -c "
+    (python3 -c "
 import sys, os
 sys.path.insert(0, '$TERMINALY_HOME')
 try:
@@ -12,7 +12,7 @@ try:
     record_visit(os.getcwd())
 except Exception:
     pass
-" 2>/dev/null &!
+" >/dev/null 2>&1 &)
 }
 
 add-zsh-hook chpwd _terminaly_chpwd_record

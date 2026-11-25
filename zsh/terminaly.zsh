@@ -1,6 +1,8 @@
 # Terminaly: Main Zsh Environment Initializer
 # Zero external downloads. 100% native macOS.
 
+setopt NO_BG_NICE 2>/dev/null
+
 export TERMINALY_HOME="${0:A:h:h}"
 export PATH="$TERMINALY_HOME/bin:$PATH"
 

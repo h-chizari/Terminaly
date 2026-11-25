@@ -21,7 +21,14 @@ git --version | awk '{print "✓ Git version: " $0}'
 chmod +x "$SCRIPT_DIR/bin/"*
 
 # 3. Initialize ~/.terminaly
-mkdir -p "$HOME/.terminaly"
+if mkdir -p "$HOME/.terminaly" 2>/dev/null; then
+    echo "✓ Initialized configuration directory: $HOME/.terminaly"
+else
+    mkdir -p "$SCRIPT_DIR/.terminaly_data"
+    export TERMINALY_DIR="$SCRIPT_DIR/.terminaly_data"
+    echo "✓ Initialized fallback database directory: $SCRIPT_DIR/.terminaly_data"
+fi
+
 python3 -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR')
@@ -32,22 +39,26 @@ print('✓ Initialized SQLite databases: frecency.db & history.db')
 "
 
 # 4. Configure Vim
-if [[ ! -f "$HOME/.vimrc" ]]; then
+if [[ ! -f "$HOME/.vimrc" ]] && touch "$HOME/.vimrc" 2>/dev/null; then
+    rm -f "$HOME/.vimrc"
     ln -s "$SCRIPT_DIR/vim/vimrc" "$HOME/.vimrc"
     echo "✓ Linked $SCRIPT_DIR/vim/vimrc -> ~/.vimrc"
 else
-    echo "✓ Found existing ~/.vimrc (You can load Terminaly vim with: vim -u $SCRIPT_DIR/vim/vimrc)"
+    echo "✓ Found existing ~/.vimrc (or sandboxed). You can load Terminaly vim with: vim -u $SCRIPT_DIR/vim/vimrc"
 fi
 
 # 5. Non-destructive integration with ~/.zshrc
 ZSHRC="$HOME/.zshrc"
 SOURCE_LINE="source \"$SCRIPT_DIR/zsh/terminaly.zsh\""
 
-if [[ -f "$ZSHRC" ]] && grep -Fq "$SOURCE_LINE" "$ZSHRC"; then
+if [[ -f "$ZSHRC" ]] && grep -Fq "$SOURCE_LINE" "$ZSHRC" 2>/dev/null; then
     echo "✓ Terminaly is already configured in $ZSHRC"
-else
+elif touch "$ZSHRC" 2>/dev/null; then
     echo "\n# Terminaly Native Suite\n$SOURCE_LINE" >> "$ZSHRC"
     echo "✓ Added Terminaly hook to $ZSHRC"
+else
+    echo "✓ Sandboxed environment: To activate in your host shell, add to your ~/.zshrc:"
+    echo "    $SOURCE_LINE"
 fi
 
 echo "\n\033[32mInstallation complete!\033[0m"

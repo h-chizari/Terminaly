@@ -21,7 +21,7 @@ function _terminaly_hist_precmd() {
         fi
         
         # Asynchronously record to SQLite
-        "$TERMINALY_HOME/bin/thist" record "$_T_HIST_CMD" "$PWD" "$last_exit" "$dur" "$_T_SESSION_ID" >/dev/null 2>&1 &!
+        ("$TERMINALY_HOME/bin/thist" record "$_T_HIST_CMD" "$PWD" "$last_exit" "$dur" "$_T_SESSION_ID" >/dev/null 2>&1 &)
         _T_HIST_CMD=""
         _T_HIST_START=0
     fi
